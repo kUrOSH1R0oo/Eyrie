@@ -146,8 +146,7 @@ Here are the available commands:
 | `show_2fa`           | `s2fa`   | Display current 2FA status & remaining unused recovery codes                                 |
 | `eyrie_lock`         | `el`     | Immediately lock the current session and exit interactive mode                               |
 | `help`               | `h`      | Show this help screen                                                                        |
-| `exit`               | `q`, `quit` | Exit interactive mode and lock vault                                         
-         |
+| `exit`               | `q`, `quit` | Exit interactive mode and lock vault                                                      |
 
 ## Example Session:
 
