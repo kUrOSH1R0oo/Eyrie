@@ -74,8 +74,10 @@ python3 eyrie.py --help
 
 ## Executables
 
-- For Windows, download the *.exe* version of Eyrie (Soon)
-- For Linux, download the *ELF* version of Eyrie (Soon)
+Precompiled binaries are available in the **GitHub Releases** section:
+
+- **Windows:** Download the `.exe` version of Eyrie from [here](https://github.com/kUrOSH1R0oo/Eyrie/releases/download/v1.0.1/eyrie.exe).
+- **Linux:** Download the `ELF` binary from [here](https://github.com/kUrOSH1R0oo/Eyrie/releases/download/v1.0.1/eyrie).
 
 ## Usage
 
