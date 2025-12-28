@@ -247,20 +247,21 @@ Eyrie's encryption uses modern primitives for confidentiality, integrity, and au
 ```
 
 Steps in Detail:
-**Key Derivation**: Password + Salt → Argon2id → 64-byte key.
-**Key Separation**: HKDF derives separate encryption and auth keys.
-**Encryption**: AES-GCM encrypts data with nonce and tag.
-**Authentication**: HMAC-SHA256 on data for integrity.
-**Storage**: Binary format with CRC32 checks and compression.
-**Decryption**: Reverse process with verification.
-**Security**: Resistant to timing attacks, GPU cracking, and tampering.
+
+- **Key Derivation**: Password + Salt → Argon2id → 64-byte key.
+- **Key Separation**: HKDF derives separate encryption and auth keys.
+- **Encryption**: AES-GCM encrypts data with nonce and tag.
+- **Authentication**: HMAC-SHA256 on data for integrity.
+- **Storage**: Binary format with CRC32 checks and compression.
+- **Decryption**: Reverse process with verification.
+- **Security**: Resistant to timing attacks, GPU cracking, and tampering.
 
 ## Security Considerations
 
-**Threat Model**: Protects against local file access, brute-force, and side-channel attacks.
-**Best Practices**: Use strong master passwords (validated with entropy checks). Enable 2FA. Regularly backup.
-**Limitations**: Not designed for multi-user or web access. Vault file should be stored securely (e.g., encrypted drive).
-**Audits**: Encourage third-party reviews of crypto.py and eyr_format.py.
+- **Threat Model**: Protects against local file access, brute-force, and side-channel attacks.
+- **Best Practices**: Use strong master passwords (validated with entropy checks). Enable 2FA. Regularly backup.
+- **Limitations**: Not designed for multi-user or web access. Vault file should be stored securely (e.g., encrypted drive).
+- **Audits**: Encourage third-party reviews of crypto.py and eyr_format.py.
 
 ## License
 
