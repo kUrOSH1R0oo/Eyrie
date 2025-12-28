@@ -85,7 +85,13 @@ Eyrie supports both command-line arguments and an interactive shell.
 
 ## Command-Line
 Basic commands:
-- Create/Unlock Vault:
+- Create Vault:
+
+```bash
+python3 eyrie.py init --vault vault.eyr
+```
+
+- Unlock Vault
 
 ```bash
 python3 eyrie.py unlock --vault vault.eyr
