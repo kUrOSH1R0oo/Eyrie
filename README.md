@@ -197,7 +197,7 @@ Eyrie follows a modular design:
                             +-------------------+
                             | Export/Import     |
                             | - Encrypted Backup|
-                            | - CSV (optional)  |
+                            | - CSV (Soon)      |
                             +-------------------+
 ```
 
