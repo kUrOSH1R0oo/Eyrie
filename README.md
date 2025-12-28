@@ -74,8 +74,8 @@ python3 eyrie.py --help
 
 ## Executables
 
-- For Windows, download the *.exe* version of Eyrie
-- For Linux, download the *ELF* version of Eyrie
+- For Windows, download the *.exe* version of Eyrie (Soon)
+- For Linux, download the *ELF* version of Eyrie (Soon)
 
 ## Usage
 
