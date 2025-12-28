@@ -1,0 +1,6 @@
+cryptography
+argon2-cffi
+prompt_toolkit 
+pyperclip 
+qrcode 
+email-validator 
