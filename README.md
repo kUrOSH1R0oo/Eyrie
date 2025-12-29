@@ -152,7 +152,6 @@ Here are the available commands:
 | `setup_2fa`          | `2fa`    | Enable Two-Factor Authentication (shows QR code + recovery codes)                            |
 | `disable_2fa`        | `d2fa`   | Turn off Two-Factor Authentication                                                           |
 | `show_2fa`           | `s2fa`   | Display current 2FA status & remaining unused recovery codes                                 |
-| `eyrie_lock`         | `el`     | Immediately lock the current session and exit interactive mode                               |
 | `help`               | `h`      | Show this help screen                                                                        |
 | `exit`               | `q`, `quit` | Exit interactive mode and lock vault                                                      |
 
