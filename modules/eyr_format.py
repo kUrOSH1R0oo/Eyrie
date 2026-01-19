@@ -22,7 +22,7 @@ Security Features:
 - File size validation to detect truncation
 
 Author: Kur0Sh1r0
-Version: 1.0.1
+Version: 1.1.0
 """
 
 import os
@@ -671,7 +671,7 @@ class EYRFile:
             cannot be parsed, ensuring the vault remains usable.
         """
         return {
-            'version': '1.0.1',
+            'version': '1.1.0',
             'created_at': time.time(),
             'entry_counter': 1,
             'tfa_enabled': False,

@@ -3,8 +3,7 @@ Eyrie Database Operations - EYR Vault Format
 
 This module provides the database interface for the Eyrie password manager,
 handling all CRUD operations on the encrypted EYR vault format. It manages
-entry encryption/decryption, metadata operations, and Two-Factor Authentication
-integration with secure data persistence.
+entry encryption/decryption, metadata operations.
 """
 
 import json
@@ -13,6 +12,8 @@ import os
 import time
 import shutil
 import re
+import random
+import string
 from typing import List, Dict, Optional, Tuple, Any
 from datetime import datetime
 
@@ -36,7 +37,7 @@ class VaultDatabase:
     and the encrypted vault storage, providing methods for:
     - Vault initialization and master key verification
     - CRUD operations on password entries
-    - Two-Factor Authentication management
+    - CRUD operations on secure notes
     - Password history tracking and retrieval
     - Vault metadata and statistics
     
@@ -60,6 +61,78 @@ class VaultDatabase:
         self.db_path = db_path        # Path to the vault file
         self.eyr_file = None          # EYRFile instance for low-level operations
         self.next_entry_id = 1        # Next available entry ID
+    
+    # ==========================================================================
+    # ID GENERATION AND MANAGEMENT
+    # ==========================================================================
+    
+    @staticmethod
+    def generate_entry_id() -> str:
+        """
+        Generate a unique entry ID in the format: EYR-XXXXXX
+        
+        Returns:
+            str: Unique entry ID (e.g., EYR-A9F3Q2)
+        
+        Format:
+            - Prefix: "EYR-"
+            - 6 characters: Uppercase letters (A-Z) and digits (0-9)
+            - Total length: 10 characters (including prefix and hyphen)
+        
+        Example IDs:
+            EYR-A9F3Q2, EYR-Z8Y4B1, EYR-7C2D9F, EYR-K5L8M3
+        """
+        # Generate 6 random characters from uppercase letters and digits
+        chars = string.ascii_uppercase + string.digits
+        random_chars = ''.join(random.choices(chars, k=6))
+        return f"EYR-{random_chars}"
+    
+    def generate_unique_entry_id(self, existing_ids: set) -> str:
+        """
+        Generate a unique entry ID that doesn't exist in the provided set.
+        
+        Args:
+            existing_ids (set): Set of existing entry IDs to avoid collisions
+            
+        Returns:
+            str: Unique entry ID not present in existing_ids
+        """
+        max_attempts = 100  # Prevent infinite loop
+        for _ in range(max_attempts):
+            new_id = self.generate_entry_id()
+            if new_id not in existing_ids:
+                return new_id
+        
+        # If we can't find a unique ID after max_attempts, use a timestamp-based ID
+        timestamp = int(time.time() % 1000000)
+        return f"EYR-T{timestamp:06d}"
+    
+    def get_all_entry_ids(self) -> set:
+        """
+        Get all existing entry IDs from the vault.
+        
+        Returns:
+            set: Set of all entry IDs currently in the vault
+        """
+        existing_ids = set()
+        try:
+            self.connect()
+            if self.eyr_file.load():
+                # Get all entries and extract their IDs
+                entry_ids = self.eyr_file.list_entries()
+                for entry_id in entry_ids:
+                    entry_bytes = self.eyr_file.get_entry(entry_id)
+                    if entry_bytes:
+                        try:
+                            entry_storage = json.loads(entry_bytes.decode('utf-8'))
+                            # Check if it has a custom ID field
+                            if 'entry_id' in entry_storage:
+                                existing_ids.add(entry_storage['entry_id'])
+                        except:
+                            continue
+        except Exception:
+            pass
+        return existing_ids
     
     # ==========================================================================
     # DATABASE CONNECTION MANAGEMENT
@@ -261,17 +334,31 @@ class VaultDatabase:
             normalized_search = self._normalize_category_name(search_category)
             
             for entry_id in entry_ids:
-                entry = self.get_entry(master_key, entry_id, formatted=False)
-                if entry:
-                    entry_category = entry.get('category', '')
-                    if entry_category:
-                        normalized_entry = self._normalize_category_name(entry_category)
+                entry_bytes = self.eyr_file.get_entry(entry_id)
+                if not entry_bytes:
+                    continue
+                    
+                try:
+                    entry_storage = json.loads(entry_bytes.decode('utf-8'))
+                    
+                    # Skip notes if we only want password entry categories
+                    if entry_storage.get('entry_type') == 'note':
+                        continue
                         
-                        # Check for partial matches or similar categories
-                        if (normalized_search in normalized_entry or 
-                            normalized_entry in normalized_search or
-                            self._are_categories_similar(normalized_search, normalized_entry)):
-                            suggestions.add(entry_category.strip())
+                    # Get entry data for category
+                    entry = self.get_entry(master_key, entry_id, formatted=False)
+                    if entry:
+                        entry_category = entry.get('category', '')
+                        if entry_category:
+                            normalized_entry = self._normalize_category_name(entry_category)
+                            
+                            # Check for partial matches or similar categories
+                            if (normalized_search in normalized_entry or 
+                                normalized_entry in normalized_search or
+                                self._are_categories_similar(normalized_search, normalized_entry)):
+                                suggestions.add(entry_category.strip())
+                except:
+                    continue
         
         except Exception as e:
             print(f"[-] Error getting category suggestions: {e}")
@@ -332,7 +419,6 @@ class VaultDatabase:
             - A verification token is encrypted and stored for future key validation
             - Salt is stored in base64 format for persistence
             - Metadata includes creation timestamp and algorithm parameters
-            - 2FA fields are initialized with default values
         """
         self.connect()
         
@@ -362,15 +448,8 @@ class VaultDatabase:
             'verification_nonce': base64.b64encode(nonce).decode('ascii'),
             'verification_tag': base64.b64encode(tag).decode('ascii'),
             
-            # Entry counter for generating unique entry IDs
+            # Entry counter for generating unique entry IDs (still used for internal indexing)
             'entry_counter': 1,
-            
-            # Two-Factor Authentication fields (initialized to defaults)
-            'tfa_enabled': False,
-            'tfa_secret': None,
-            'tfa_recovery_codes': [],
-            'tfa_trusted_devices': [],
-            'tfa_last_used': None
         }
         
         # Create the vault file with metadata
@@ -381,69 +460,6 @@ class VaultDatabase:
         
         print("[-] Failed to create EYR vault")
         return False
-    
-    def add_tfa_fields_if_missing(self, master_key: bytes) -> bool:
-        """
-        Add 2FA metadata fields to an existing vault for backward compatibility.
-        
-        Older vaults may not have 2FA fields. This method ensures they exist
-        with default values.
-        
-        Args:
-            master_key (bytes): Master encryption key (for consistency)
-        
-        Returns:
-            bool: True if fields were added or already exist, False on error.
-        
-        Note:
-            The master_key parameter is included for interface consistency
-            but is not used in this method.
-        """
-        try:
-            self.connect()
-            
-            # Load existing vault data
-            if not self.eyr_file.load():
-                return False
-            
-            metadata = self.eyr_file.metadata
-            if not metadata:
-                return False
-            
-            # Check each 2FA field and add if missing
-            needs_update = False
-            
-            if 'tfa_enabled' not in metadata:
-                metadata['tfa_enabled'] = False
-                needs_update = True
-            
-            if 'tfa_secret' not in metadata:
-                metadata['tfa_secret'] = None
-                needs_update = True
-            
-            if 'tfa_recovery_codes' not in metadata:
-                metadata['tfa_recovery_codes'] = []
-                needs_update = True
-            
-            if 'tfa_trusted_devices' not in metadata:
-                metadata['tfa_trusted_devices'] = []
-                needs_update = True
-            
-            if 'tfa_last_used' not in metadata:
-                metadata['tfa_last_used'] = None
-                needs_update = True
-            
-            # Only update if fields were added
-            if needs_update:
-                self.eyr_file.metadata = metadata
-                result = self.eyr_file.update_metadata()
-                return result
-            
-            return True  # Fields already exist
-            
-        except Exception as e:
-            print(f"[-] Error adding 2FA fields: {e}")
-            return False
     
     def verify_master_key(self, master_key: bytes) -> bool:
         """
@@ -513,390 +529,10 @@ class VaultDatabase:
             return False
     
     # ==========================================================================
-    # TWO-FACTOR AUTHENTICATION MANAGEMENT
+    # PASSWORD ENTRY MANAGEMENT - CRUD OPERATIONS
     # ==========================================================================
     
-    def get_tfa_settings(self, master_key: bytes) -> Optional[Dict]:
-        """
-        Retrieve Two-Factor Authentication settings from vault metadata.
-        
-        Args:
-            master_key (bytes): Master encryption key (for consistency)
-        
-        Returns:
-            Optional[Dict]: Dictionary containing 2FA settings, or None on error.
-            
-            Dictionary structure:
-            {
-                'enabled': bool,
-                'secret': str or None,
-                'recovery_codes': List[Dict],
-                'trusted_devices': List[Dict],
-                'last_used': float or None
-            }
-        """
-        try:
-            self.connect()
-            
-            if not self.eyr_file.load():
-                return None
-            
-            metadata = self.eyr_file.metadata
-            if not metadata:
-                return None
-            
-            # Extract 2FA settings from metadata
-            tfa_settings = {
-                'enabled': metadata.get('tfa_enabled', False),
-                'secret': metadata.get('tfa_secret'),
-                'recovery_codes': metadata.get('tfa_recovery_codes', []),
-                'trusted_devices': metadata.get('tfa_trusted_devices', []),
-                'last_used': metadata.get('tfa_last_used')
-            }
-            
-            return tfa_settings
-            
-        except Exception as e:
-            print(f"[-] Error retrieving 2FA settings: {e}")
-            return None
-    
-    def update_tfa_settings(self, master_key: bytes, tfa_settings: Dict) -> bool:
-        """
-        Update 2FA settings in vault metadata.
-        
-        Args:
-            master_key (bytes): Master encryption key (for consistency)
-            tfa_settings (Dict): Updated 2FA settings dictionary
-        
-        Returns:
-            bool: True if update succeeded, False otherwise.
-        
-        Note:
-            This method attempts a standard metadata update first, with a
-            fallback to vault recreation if the standard method fails.
-        """
-        try:
-            self.connect()
-            
-            if not self.eyr_file:
-                return False
-            
-            if not self.eyr_file.load():
-                return False
-            
-            # Update metadata with provided 2FA settings
-            metadata = self.eyr_file.metadata
-            if not metadata:
-                return False
-            
-            metadata['tfa_enabled'] = tfa_settings.get('enabled', False)
-            metadata['tfa_secret'] = tfa_settings.get('secret')
-            metadata['tfa_recovery_codes'] = tfa_settings.get('recovery_codes', [])
-            metadata['tfa_trusted_devices'] = tfa_settings.get('trusted_devices', [])
-            metadata['tfa_last_used'] = tfa_settings.get('last_used', time.time())
-            
-            # Save updated metadata
-            self.eyr_file.metadata = metadata
-            
-            # Try standard metadata update
-            result = self.eyr_file.update_metadata()
-            
-            if not result:
-                # Fallback: recreate vault with updated metadata if standard update fails
-                result = self._fallback_update_metadata(metadata)
-                
-                # Reconnect after fallback operation
-                if result:
-                    self.connect()
-            
-            return result
-            
-        except Exception as e:
-            print(f"[-] Error updating 2FA settings: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-
-    def _fallback_update_metadata(self, metadata: Dict) -> bool:
-        """
-        Fallback method to update metadata by recreating the vault.
-        
-        This is a last resort when the standard metadata update fails,
-        potentially due to file corruption or format issues.
-        
-        Args:
-            metadata (Dict): Updated metadata to apply
-        
-        Returns:
-            bool: True if vault was successfully recreated with new metadata.
-        
-        Security Note:
-            Creates a temporary backup during the operation and restores it
-            if the recreation fails.
-        """
-        try:
-            # Create a temporary backup of the current vault
-            temp_backup = f"{self.db_path}.backup"
-            shutil.copy2(self.db_path, temp_backup)
-            
-            try:
-                # Close current connection
-                self.close()
-                
-                # Get the current vault entries before recreation
-                old_eyr = EYRFile(self.db_path)
-                if not old_eyr.load():
-                    return False
-                
-                # Extract all existing entries
-                entry_ids = old_eyr.list_entries()
-                entries_data = {}
-                for entry_id in entry_ids:
-                    entry_data = old_eyr.get_entry(entry_id)
-                    if entry_data:
-                        entries_data[entry_id] = entry_data
-                
-                old_eyr.close()
-                
-                # Create new vault with updated metadata
-                new_eyr = EYRFile(self.db_path)
-                
-                # Merge existing metadata with updates
-                if os.path.exists(self.db_path):
-                    old_eyr2 = EYRFile(self.db_path)
-                    if old_eyr2.load():
-                        old_metadata = old_eyr2.metadata.copy() if old_eyr2.metadata else {}
-                        old_metadata.update(metadata)  # Apply updates
-                        old_eyr2.close()
-                    else:
-                        old_metadata = metadata
-                else:
-                    old_metadata = metadata
-                
-                # Create new vault file with merged metadata
-                if not new_eyr.create(old_metadata):
-                    return False
-                
-                # Restore all entries to the new vault
-                for entry_id, entry_data in entries_data.items():
-                    new_eyr.add_entry(entry_id, entry_data)
-                
-                new_eyr.close()
-                
-                return True  # Recreation successful
-                
-            except Exception:
-                # Restore from backup if recreation failed
-                if os.path.exists(temp_backup):
-                    shutil.copy2(temp_backup, self.db_path)
-                return False
-            finally:
-                # Clean up temporary backup file
-                if os.path.exists(temp_backup):
-                    try:
-                        os.remove(temp_backup)
-                    except:
-                        pass  # Ignore cleanup errors
-                    
-        except Exception:
-            return False  # Overall fallback operation failed
-    
-    def enable_tfa(self, master_key: bytes, secret: str, recovery_codes: List[str]) -> bool:
-        """
-        Enable Two-Factor Authentication for the vault.
-        
-        Args:
-            master_key (bytes): Master encryption key
-            secret (str): TOTP secret for authenticator apps
-            recovery_codes (List[str]): List of emergency recovery codes
-        
-        Returns:
-            bool: True if 2FA was successfully enabled.
-        
-        Note:
-            Recovery codes are stored with metadata including usage status
-            and expiration (1 year from creation).
-        """
-        try:
-            # Prepare recovery codes with metadata
-            recovery_code_objs = []
-            for code in recovery_codes:
-                recovery_code_objs.append({
-                    'code': code, 
-                    'used': False,  # Track if code has been used
-                    'expires': time.time() + 86400 * 365  # Expire in 1 year
-                })
-            
-            # Build 2FA settings dictionary
-            tfa_settings = {
-                'enabled': True,
-                'secret': secret,
-                'recovery_codes': recovery_code_objs,
-                'trusted_devices': [],  # Start with no trusted devices
-                'last_used': time.time()  # Set initial usage timestamp
-            }
-            
-            return self.update_tfa_settings(master_key, tfa_settings)
-            
-        except Exception as e:
-            print(f"[-] Error enabling 2FA: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-    
-    def disable_tfa(self, master_key: bytes) -> bool:
-        """
-        Disable Two-Factor Authentication for the vault.
-        
-        Args:
-            master_key (bytes): Master encryption key
-        
-        Returns:
-            bool: True if 2FA was successfully disabled.
-        
-        Note:
-            This removes all 2FA configuration including secret and recovery codes.
-        """
-        try:
-            # Reset all 2FA settings to defaults
-            tfa_settings = {
-                'enabled': False,
-                'secret': None,
-                'recovery_codes': [],
-                'trusted_devices': [],
-                'last_used': None
-            }
-            
-            return self.update_tfa_settings(master_key, tfa_settings)
-            
-        except Exception as e:
-            print(f"[-] Error disabling 2FA: {e}")
-            return False
-    
-    def verify_totp_code(self, master_key: bytes, code: str) -> bool:
-        """
-        Verify a TOTP (Time-based One-Time Password) code.
-        
-        Args:
-            master_key (bytes): Master encryption key (to access 2FA settings)
-            code (str): 6-digit TOTP code from authenticator app
-        
-        Returns:
-            bool: True if the code is valid, False otherwise.
-        
-        Note:
-            Delegates actual TOTP verification to the tfa_manager module.
-        """
-        try:
-            # Retrieve 2FA settings from vault
-            tfa_settings = self.get_tfa_settings(master_key)
-            if not tfa_settings or not tfa_settings['enabled']:
-                return False  # 2FA not enabled
-            
-            secret = tfa_settings.get('secret')
-            if not secret:
-                return False  # No secret configured
-            
-            # Delegate verification to TFA manager
-            from .tfa import tfa_manager
-            return tfa_manager.verify_totp_code(secret, code)
-            
-        except Exception as e:
-            print(f"[-] Error verifying TOTP code: {e}")
-            return False
-    
-    def verify_recovery_code(self, master_key: bytes, code: str) -> Tuple[bool, bool]:
-        """
-        Verify a 2FA recovery code and update its status.
-        
-        Args:
-            master_key (bytes): Master encryption key
-            code (str): Recovery code to verify
-        
-        Returns:
-            Tuple[bool, bool]: 
-                - First bool: True if code is valid
-                - Second bool: True if 2FA should be disabled (no remaining codes)
-        
-        Note:
-            Valid recovery codes are marked as used after verification.
-            If all recovery codes are used, suggests disabling 2FA.
-        """
-        try:
-            # Get current 2FA settings
-            tfa_settings = self.get_tfa_settings(master_key)
-            if not tfa_settings:
-                return False, False
-            
-            from .tfa import tfa_manager
-            recovery_codes = tfa_settings.get('recovery_codes', [])
-            
-            # Verify code and get updated code list
-            is_valid, updated_codes = tfa_manager.verify_recovery_code(code, recovery_codes)
-            
-            if is_valid:
-                # Count remaining unused codes
-                unused_codes = [c for c in updated_codes if not c.get('used', False)]
-                
-                # Update vault with marked code
-                tfa_settings['recovery_codes'] = updated_codes
-                self.update_tfa_settings(master_key, tfa_settings)
-                
-                # Suggest disabling 2FA if no recovery codes remain
-                should_disable = len(unused_codes) == 0
-                return True, should_disable
-            
-            return False, False
-            
-        except Exception as e:
-            print(f"[-] Error verifying recovery code: {e}")
-            return False, False
-    
-    def update_trusted_device(self, master_key: bytes, device_id: str, add: bool = True) -> bool:
-        """
-        Add or remove a trusted device for 2FA bypass.
-        
-        Args:
-            master_key (bytes): Master encryption key
-            device_id (str): Unique device identifier
-            add (bool): True to add device, False to remove
-        
-        Returns:
-            bool: True if operation succeeded.
-        
-        Note:
-            Trusted devices bypass 2FA for a configured period (e.g., 30 days).
-        """
-        try:
-            # Get current 2FA settings
-            tfa_settings = self.get_tfa_settings(master_key)
-            if not tfa_settings:
-                return False
-            
-            from .tfa import tfa_manager
-            trusted_devices = tfa_settings.get('trusted_devices', [])
-            
-            # Update trusted devices list
-            if add:
-                trusted_devices = tfa_manager.add_trusted_device(device_id, trusted_devices)
-            else:
-                trusted_devices = tfa_manager.remove_trusted_device(device_id, trusted_devices)
-            
-            # Update settings with new device list
-            tfa_settings['trusted_devices'] = trusted_devices
-            tfa_settings['last_used'] = time.time()  # Update last used timestamp
-            
-            return self.update_tfa_settings(master_key, tfa_settings)
-            
-        except Exception as e:
-            print(f"[-] Error updating trusted device: {e}")
-            return False
-    
-    # ==========================================================================
-    # ENTRY MANAGEMENT - CRUD OPERATIONS
-    # ==========================================================================
-    
-    def add_entry(self, master_key: bytes, entry_data: dict) -> Optional[int]:
+    def add_entry(self, master_key: bytes, entry_data: dict) -> Optional[str]:
         """
         Add a new password entry to the vault.
         
@@ -905,7 +541,7 @@ class VaultDatabase:
             entry_data (dict): Entry data including title, username, password, etc.
         
         Returns:
-            Optional[int]: Assigned entry ID if successful, None otherwise.
+            Optional[str]: Assigned entry ID (e.g., "EYR-A9F3Q2") if successful, None otherwise.
         
         Security Notes:
             - Entry data is encrypted with entry-specific additional authenticated data
@@ -918,26 +554,35 @@ class VaultDatabase:
             if not self.eyr_file.load():
                 return None
             
-            # Get next available entry ID from metadata
-            entry_id = self.eyr_file.metadata.get('entry_counter', 1)
+            # Get next available internal entry ID from metadata
+            internal_entry_id = self.eyr_file.metadata.get('entry_counter', 1)
             
-            # Add timestamps to entry data
+            # Generate unique display ID in format EYR-XXXXXX
+            existing_ids = self.get_all_entry_ids()
+            display_entry_id = self.generate_unique_entry_id(existing_ids)
+            
+            # Add timestamps and IDs to entry data
             current_time = time.time()
             entry_data_with_timestamps = entry_data.copy()
             entry_data_with_timestamps['created_at'] = current_time
             entry_data_with_timestamps['updated_at'] = current_time
+            entry_data_with_timestamps['entry_type'] = 'password'  # Mark as password type
+            entry_data_with_timestamps['display_id'] = display_entry_id  # Add display ID
             
             # Initialize empty password history
             # Current password is NOT added to history here - only old passwords go in history
             entry_data_with_timestamps['password_history'] = []
             
             # Encrypt the complete entry data
-            encrypted = encrypt_entry(master_key, entry_data_with_timestamps, entry_id)
+            encrypted = encrypt_entry(master_key, entry_data_with_timestamps, internal_entry_id)
             
             # Build storage structure with additional metadata
             entry_storage = {
                 'encrypted_data': encrypted,  # The encrypted entry
                 'category': entry_data.get('category', 'General'),
+                'entry_type': 'password',  # Mark as password type
+                'entry_id': display_entry_id,  # Store the display ID
+                'internal_id': internal_entry_id,  # Store internal ID for backward compatibility
                 'created_at': current_time,
                 'updated_at': current_time
             }
@@ -946,14 +591,14 @@ class VaultDatabase:
             entry_json = json.dumps(entry_storage, ensure_ascii=False)
             entry_bytes = entry_json.encode('utf-8')
             
-            # Store entry in vault
-            if self.eyr_file.add_entry(entry_id, entry_bytes):
+            # Store entry in vault using internal ID for indexing
+            if self.eyr_file.add_entry(internal_entry_id, entry_bytes):
                 # Increment entry counter in metadata
-                self.eyr_file.metadata['entry_counter'] = entry_id + 1
+                self.eyr_file.metadata['entry_counter'] = internal_entry_id + 1
                 self.eyr_file.update_metadata()
                 
-                print(f"[+] Entry added (ID: {entry_id})")
-                return entry_id
+                print(f"[+] Entry added (ID: {display_entry_id})")
+                return display_entry_id
             
             return None  # Entry addition failed
             
@@ -961,13 +606,85 @@ class VaultDatabase:
             print(f"[-] Error adding entry: {e}")
             return None
     
-    def get_entry(self, master_key: bytes, entry_id: int, formatted: bool = True) -> Optional[dict]:
+    def _get_entry_by_display_id(self, master_key: bytes, display_id: str, formatted: bool = True) -> Optional[dict]:
         """
-        Retrieve and decrypt an entry by ID.
+        Internal method to find and retrieve an entry by its display ID.
         
         Args:
             master_key (bytes): Master encryption key
-            entry_id (int): Entry identifier
+            display_id (str): Display ID (e.g., "EYR-A9F3Q2")
+            formatted (bool): If True, include formatted timestamps
+        
+        Returns:
+            Optional[dict]: Decrypted entry data with metadata, or None if not found.
+        """
+        try:
+            self.connect()
+            
+            if not self.eyr_file.load():
+                return None
+            
+            # Search through all entries to find the one with matching display ID
+            entry_ids = self.eyr_file.list_entries()
+            
+            for internal_entry_id in entry_ids:
+                entry_bytes = self.eyr_file.get_entry(internal_entry_id)
+                if not entry_bytes:
+                    continue
+                
+                try:
+                    entry_storage = json.loads(entry_bytes.decode('utf-8'))
+                    
+                    # Check if this is a password entry with matching display ID
+                    if (entry_storage.get('entry_type') == 'password' and 
+                        entry_storage.get('entry_id') == display_id):
+                        
+                        encrypted_data = entry_storage.get('encrypted_data', {})
+                        
+                        # Decrypt entry data
+                        entry_data = decrypt_entry(master_key, encrypted_data)
+                        if not entry_data:
+                            return None
+                        
+                        # Add metadata fields
+                        entry_data['id'] = display_id  # Use display ID as the ID
+                        entry_data['internal_id'] = internal_entry_id  # Store internal ID for reference
+                        entry_data['category'] = entry_storage.get('category', 'General')
+                        entry_data['entry_type'] = 'password'
+                        
+                        # Handle timestamps with storage data taking precedence
+                        storage_created = entry_storage.get('created_at')
+                        decrypted_created = entry_data.get('created_at')
+                        entry_data['created_at'] = storage_created if storage_created is not None else decrypted_created
+                        entry_data['updated_at'] = entry_storage.get('updated_at', entry_data.get('updated_at'))
+                        
+                        # Store raw timestamps for internal use
+                        entry_data['created_raw'] = entry_data.get('created_at')
+                        entry_data['updated_raw'] = entry_data.get('updated_at')
+                        
+                        # Add formatted timestamps for display if requested
+                        if formatted:
+                            entry_data['created_formatted'] = self.format_datetime(entry_data.get('created_at'))
+                            entry_data['updated_formatted'] = self.format_datetime(entry_data.get('updated_at'))
+                        
+                        return entry_data
+                        
+                except:
+                    continue  # Skip invalid entries
+            
+            return None  # No entry found with the given display ID
+            
+        except Exception as e:
+            print(f"[-] Error retrieving entry by display ID {display_id}: {e}")
+            return None
+    
+    def get_entry(self, master_key: bytes, entry_id: str, formatted: bool = True) -> Optional[dict]:
+        """
+        Retrieve and decrypt a password entry by ID.
+        
+        Args:
+            master_key (bytes): Master encryption key
+            entry_id (str): Entry identifier (can be display ID like "EYR-A9F3Q2" or internal ID as string)
             formatted (bool): If True, include formatted timestamps
         
         Returns:
@@ -977,6 +694,29 @@ class VaultDatabase:
             The entry includes both raw timestamps (for internal use) and
             optionally formatted timestamps (for display).
         """
+        # Check if entry_id is a display ID (starts with "EYR-")
+        if isinstance(entry_id, str) and entry_id.startswith("EYR-"):
+            return self._get_entry_by_display_id(master_key, entry_id, formatted)
+        
+        # Otherwise, assume it's an internal ID (for backward compatibility)
+        try:
+            internal_id = int(entry_id)
+            return self._get_entry_by_internal_id(master_key, internal_id, formatted)
+        except (ValueError, TypeError):
+            return None
+    
+    def _get_entry_by_internal_id(self, master_key: bytes, internal_entry_id: int, formatted: bool = True) -> Optional[dict]:
+        """
+        Internal method to retrieve an entry by its internal ID (for backward compatibility).
+        
+        Args:
+            master_key (bytes): Master encryption key
+            internal_entry_id (int): Internal entry identifier
+            formatted (bool): If True, include formatted timestamps
+        
+        Returns:
+            Optional[dict]: Decrypted entry data with metadata, or None if not found.
+        """
         try:
             self.connect()
             
@@ -984,12 +724,17 @@ class VaultDatabase:
                 return None
             
             # Retrieve raw entry bytes from vault
-            entry_bytes = self.eyr_file.get_entry(entry_id)
+            entry_bytes = self.eyr_file.get_entry(internal_entry_id)
             if not entry_bytes:
                 return None
             
             # Parse storage structure
             entry_storage = json.loads(entry_bytes.decode('utf-8'))
+            
+            # Check if this is actually a password entry
+            if entry_storage.get('entry_type') != 'password':
+                return None  # This is not a password entry
+            
             encrypted_data = entry_storage.get('encrypted_data', {})
             
             # Decrypt entry data
@@ -998,8 +743,16 @@ class VaultDatabase:
                 return None
             
             # Add metadata fields
-            entry_data['id'] = entry_id
+            # Use display ID if available, otherwise use internal ID as string
+            display_id = entry_storage.get('entry_id')
+            if display_id:
+                entry_data['id'] = display_id
+            else:
+                entry_data['id'] = str(internal_entry_id)  # Fallback to internal ID
+            
+            entry_data['internal_id'] = internal_entry_id  # Store internal ID for reference
             entry_data['category'] = entry_storage.get('category', 'General')
+            entry_data['entry_type'] = 'password'
             
             # Handle timestamps with storage data taking precedence
             storage_created = entry_storage.get('created_at')
@@ -1019,23 +772,19 @@ class VaultDatabase:
             return entry_data
             
         except Exception as e:
-            print(f"[-] Error retrieving entry {entry_id}: {e}")
+            print(f"[-] Error retrieving entry by internal ID {internal_entry_id}: {e}")
             return None
     
     def list_entries(self, master_key: bytes, limit: int = 1000) -> List[dict]:
         """
-        List all vault entries with basic information.
+        List all password entries in the vault (excluding notes).
         
         Args:
             master_key (bytes): Master encryption key
             limit (int): Maximum number of entries to return
         
         Returns:
-            List[dict]: List of entry summaries (title, username, category, creation date).
-        
-        Note:
-            This method decrypts each entry to extract summary information.
-            For large vaults, consider implementing a metadata-only approach.
+            List[dict]: List of password entry summaries (ID, title, username, category, creation date).
         """
         entries = []
         
@@ -1046,18 +795,39 @@ class VaultDatabase:
                 return entries
             
             # Get list of all entry IDs
-            entry_ids = self.eyr_file.list_entries()
+            internal_entry_ids = self.eyr_file.list_entries()
             
             # Process entries up to limit
-            for entry_id in entry_ids[:limit]:
-                entry_summary = {'id': entry_id}
+            for internal_entry_id in internal_entry_ids[:limit]:
+                # Check entry type first without full decryption
+                entry_bytes = self.eyr_file.get_entry(internal_entry_id)
+                if not entry_bytes:
+                    continue
+                    
+                try:
+                    entry_storage = json.loads(entry_bytes.decode('utf-8'))
+                    # Skip notes
+                    if entry_storage.get('entry_type') == 'note':
+                        continue
+                except:
+                    continue  # Skip invalid entries
+                
+                entry_summary = {'internal_id': internal_entry_id}
+                
+                # Get the display ID from storage
+                display_id = entry_storage.get('entry_id')
+                if display_id:
+                    entry_summary['id'] = display_id
+                else:
+                    entry_summary['id'] = str(internal_entry_id)  # Fallback
                 
                 # Get full entry to extract summary information
-                entry_full = self.get_entry(master_key, entry_id, formatted=False)
+                entry_full = self.get_entry(master_key, entry_summary['id'], formatted=False)
                 if entry_full:
                     entry_summary['title'] = entry_full.get('title', 'Unknown')
                     entry_summary['username'] = entry_full.get('username', '')
                     entry_summary['category'] = entry_full.get('category', 'General')
+                    entry_summary['entry_type'] = 'password'
                     
                     # Format creation date for display
                     created_at = entry_full.get('created_raw')
@@ -1075,14 +845,14 @@ class VaultDatabase:
     
     def search_entries(self, master_key: bytes, search_term: str) -> List[dict]:
         """
-        Search entries by content across multiple fields including category.
+        Search password entries by content across multiple fields including category.
         
         Args:
             master_key (bytes): Master encryption key
             search_term (str): Search query (case-insensitive)
         
         Returns:
-            List[dict]: List of matching entries with full details.
+            List[dict]: List of matching password entries with full details.
         
         Search Fields:
             - Title
@@ -1100,14 +870,27 @@ class VaultDatabase:
             if not self.eyr_file.load():
                 return results
             
-            entry_ids = self.eyr_file.list_entries()
+            internal_entry_ids = self.eyr_file.list_entries()
             
             # Normalize search term for category matching
             normalized_search = self._normalize_category_name(search_term)
             
             # Search through all entries
-            for entry_id in entry_ids:
-                entry_full = self.get_entry(master_key, entry_id, formatted=True)
+            for internal_entry_id in internal_entry_ids:
+                # Check entry type first
+                entry_bytes = self.eyr_file.get_entry(internal_entry_id)
+                if entry_bytes:
+                    try:
+                        entry_storage = json.loads(entry_bytes.decode('utf-8'))
+                        # Skip notes in password search
+                        if entry_storage.get('entry_type') == 'note':
+                            continue
+                    except:
+                        continue  # Skip invalid entries
+                
+                # Get display ID
+                display_id = entry_storage.get('entry_id', str(internal_entry_id))
+                entry_full = self.get_entry(master_key, display_id, formatted=True)
                 if not entry_full:
                     continue
                 
@@ -1158,14 +941,14 @@ class VaultDatabase:
     
     def get_entries_by_category(self, master_key: bytes, category: str) -> List[dict]:
         """
-        Filter entries by category with flexible matching.
+        Filter password entries by category with flexible matching.
         
         Args:
             master_key (bytes): Master encryption key
             category (str): Category name to filter by (case-insensitive, flexible formatting)
         
         Returns:
-            List[dict]: List of entries in the specified category.
+            List[dict]: List of password entries in the specified category.
         
         Note:
             Category matching is flexible:
@@ -1181,14 +964,27 @@ class VaultDatabase:
             if not self.eyr_file.load():
                 return entries
             
-            entry_ids = self.eyr_file.list_entries()
+            internal_entry_ids = self.eyr_file.list_entries()
             
             # Normalize the search category for flexible matching
             normalized_search = self._normalize_category_name(category)
             
             # Filter entries by category with flexible matching
-            for entry_id in entry_ids:
-                entry = self.get_entry(master_key, entry_id, formatted=True)
+            for internal_entry_id in internal_entry_ids:
+                # Check entry type first
+                entry_bytes = self.eyr_file.get_entry(internal_entry_id)
+                if entry_bytes:
+                    try:
+                        entry_storage = json.loads(entry_bytes.decode('utf-8'))
+                        # Skip notes
+                        if entry_storage.get('entry_type') == 'note':
+                            continue
+                    except:
+                        continue  # Skip invalid entries
+                
+                # Get display ID
+                display_id = entry_storage.get('entry_id', str(internal_entry_id))
+                entry = self.get_entry(master_key, display_id, formatted=True)
                 if entry:
                     entry_category = entry.get('category', 'General')
                     normalized_entry = self._normalize_category_name(entry_category)
@@ -1213,13 +1009,13 @@ class VaultDatabase:
         
         return entries
     
-    def update_entry(self, master_key: bytes, entry_id: int, new_data: dict) -> bool:
+    def update_entry(self, master_key: bytes, entry_id: str, new_data: dict) -> bool:
         """
-        Update an existing entry with new data.
+        Update an existing password entry with new data.
         
         Args:
             master_key (bytes): Master encryption key
-            entry_id (int): Entry identifier
+            entry_id (str): Entry identifier (display ID like "EYR-A9F3Q2")
             new_data (dict): Updated entry data
         
         Returns:
@@ -1242,6 +1038,11 @@ class VaultDatabase:
             if not current:
                 return False
             
+            # Get internal ID from current entry
+            internal_entry_id = current.get('internal_id')
+            if not internal_entry_id:
+                return False
+            
             # Merge current data with updates
             updated_data = current.copy()
             updated_data.update(new_data)
@@ -1249,6 +1050,7 @@ class VaultDatabase:
             # Update modification timestamp
             current_time = time.time()
             updated_data['updated_at'] = current_time
+            updated_data['entry_type'] = 'password'  # Ensure type is preserved
             
             # Check if password was changed
             old_password = current.get('password', '')
@@ -1280,36 +1082,41 @@ class VaultDatabase:
                     updated_data['password_history'] = updated_data['password_history'][:max_history]
             
             # Remove internal metadata fields before encryption
-            for field in ['id', 'category', 'created_raw', 'updated_raw']:
+            for field in ['id', 'internal_id', 'category', 'created_raw', 'updated_raw']:
                 updated_data.pop(field, None)
             
             # Encrypt updated entry
-            encrypted = encrypt_entry(master_key, updated_data, entry_id)
+            encrypted = encrypt_entry(master_key, updated_data, internal_entry_id)
+            
+            # Get current storage to preserve other fields
+            entry_bytes = self.eyr_file.get_entry(internal_entry_id)
+            if not entry_bytes:
+                return False
+            
+            entry_storage = json.loads(entry_bytes.decode('utf-8'))
             
             # Update storage structure
-            entry_storage = {
-                'encrypted_data': encrypted,
-                'category': new_data.get('category', current.get('category', 'General')),
-                'created_at': current.get('created_raw', current_time),
-                'updated_at': current_time
-            }
+            entry_storage['encrypted_data'] = encrypted
+            entry_storage['category'] = new_data.get('category', current.get('category', 'General'))
+            entry_storage['entry_type'] = 'password'
+            entry_storage['updated_at'] = current_time
             
             # Serialize and store
             entry_json = json.dumps(entry_storage, ensure_ascii=False)
             entry_bytes = entry_json.encode('utf-8')
             
-            return self.eyr_file.update_entry(entry_id, entry_bytes)
+            return self.eyr_file.update_entry(internal_entry_id, entry_bytes)
             
         except Exception as e:
             print(f"[-] Error updating entry: {e}")
             return False
     
-    def delete_entry(self, entry_id: int) -> bool:
+    def delete_entry(self, entry_id: str) -> bool:
         """
-        Permanently remove an entry from the vault.
+        Permanently remove an entry (password or note) from the vault.
         
         Args:
-            entry_id (int): Entry identifier
+            entry_id (str): Entry identifier (display ID like "EYR-A9F3Q2")
         
         Returns:
             bool: True if deletion succeeded.
@@ -1324,12 +1131,570 @@ class VaultDatabase:
             if not self.eyr_file.load():
                 return False
             
-            return self.eyr_file.delete_entry(entry_id)
+            # Find the internal ID for the given display ID
+            internal_entry_ids = self.eyr_file.list_entries()
+            target_internal_id = None
+            
+            for internal_entry_id in internal_entry_ids:
+                entry_bytes = self.eyr_file.get_entry(internal_entry_id)
+                if entry_bytes:
+                    try:
+                        entry_storage = json.loads(entry_bytes.decode('utf-8'))
+                        if entry_storage.get('entry_id') == entry_id:
+                            target_internal_id = internal_entry_id
+                            break
+                    except:
+                        continue
+            
+            # If not found by display ID, try as internal ID
+            if target_internal_id is None:
+                try:
+                    # Check if entry_id is an internal ID
+                    target_internal_id = int(entry_id)
+                    # Verify it exists
+                    entry_bytes = self.eyr_file.get_entry(target_internal_id)
+                    if not entry_bytes:
+                        return False
+                except (ValueError, TypeError):
+                    return False  # Not a valid ID format
+            
+            return self.eyr_file.delete_entry(target_internal_id)
             
         except Exception as e:
             print(f"[-] Error deleting entry: {e}")
             return False
+
+    # ==============================================================================
+    # NOTES MANAGEMENT
+    # ==============================================================================
+
+    def add_note(self, master_key: bytes, note_data: dict) -> Optional[str]:
+        """
+        Add a new secure note to the vault.
     
+        Args:
+            master_key (bytes): Master encryption key
+            note_data (dict): Note data including title, content, category, etc.
+    
+        Returns:
+            Optional[str]: Assigned entry ID (e.g., "EYR-A9F3Q2") if successful, None otherwise.
+    
+        Note:
+            Notes are stored similarly to password entries but with different structure and content handling.
+        """
+        try:
+            self.connect()
+        
+            if not self.eyr_file.load():
+                return None
+        
+            # Get next available internal entry ID from metadata
+            internal_entry_id = self.eyr_file.metadata.get('entry_counter', 1)
+            
+            # Generate unique display ID in format EYR-XXXXXX
+            existing_ids = self.get_all_entry_ids()
+            display_entry_id = self.generate_unique_entry_id(existing_ids)
+        
+            # Add timestamps and IDs to note data
+            current_time = time.time()
+            note_data_with_timestamps = note_data.copy()
+            note_data_with_timestamps['created_at'] = current_time
+            note_data_with_timestamps['updated_at'] = current_time
+            note_data_with_timestamps['entry_type'] = 'note'  # Mark as note type
+            note_data_with_timestamps['display_id'] = display_entry_id  # Add display ID
+
+            # Encrypt the complete note data
+            encrypted = encrypt_entry(master_key, note_data_with_timestamps, internal_entry_id)
+        
+            # Build storage structure with additional metadata
+            entry_storage = {
+                'encrypted_data': encrypted,  # The encrypted note
+                'category': note_data.get('category', 'Notes'),
+                'entry_type': 'note',  # Mark as note type
+                'entry_id': display_entry_id,  # Store the display ID
+                'internal_id': internal_entry_id,  # Store internal ID for backward compatibility
+                'created_at': current_time,
+                'updated_at': current_time
+            }
+        
+            # Serialize to JSON and encode to bytes
+            entry_json = json.dumps(entry_storage, ensure_ascii=False)
+            entry_bytes = entry_json.encode('utf-8')
+        
+            # Store note in vault using internal ID for indexing
+            if self.eyr_file.add_entry(internal_entry_id, entry_bytes):
+                # Increment entry counter in metadata
+                self.eyr_file.metadata['entry_counter'] = internal_entry_id + 1
+                self.eyr_file.update_metadata()
+            
+                print(f"[+] Note added (ID: {display_entry_id})")
+                return display_entry_id
+        
+            return None  # Note addition failed
+        
+        except Exception as e:
+            print(f"[-] Error adding note: {e}")
+            return None
+
+    def get_note(self, master_key: bytes, entry_id: str, formatted: bool = True) -> Optional[dict]:
+        """
+        Retrieve and decrypt a note by ID.
+    
+        Args:
+            master_key (bytes): Master encryption key
+            entry_id (str): Entry identifier (display ID like "EYR-A9F3Q2")
+            formatted (bool): If True, include formatted timestamps
+    
+        Returns:
+            Optional[dict]: Decrypted note data with metadata, or None if not found.
+        """
+        # Check if entry_id is a display ID (starts with "EYR-")
+        if isinstance(entry_id, str) and entry_id.startswith("EYR-"):
+            return self._get_note_by_display_id(master_key, entry_id, formatted)
+        
+        # Otherwise, assume it's an internal ID (for backward compatibility)
+        try:
+            internal_id = int(entry_id)
+            return self._get_note_by_internal_id(master_key, internal_id, formatted)
+        except (ValueError, TypeError):
+            return None
+    
+    def _get_note_by_display_id(self, master_key: bytes, display_id: str, formatted: bool = True) -> Optional[dict]:
+        """
+        Internal method to find and retrieve a note by its display ID.
+        
+        Args:
+            master_key (bytes): Master encryption key
+            display_id (str): Display ID (e.g., "EYR-A9F3Q2")
+            formatted (bool): If True, include formatted timestamps
+        
+        Returns:
+            Optional[dict]: Decrypted note data with metadata, or None if not found.
+        """
+        try:
+            self.connect()
+            
+            if not self.eyr_file.load():
+                return None
+            
+            # Search through all entries to find the one with matching display ID
+            entry_ids = self.eyr_file.list_entries()
+            
+            for internal_entry_id in entry_ids:
+                entry_bytes = self.eyr_file.get_entry(internal_entry_id)
+                if not entry_bytes:
+                    continue
+                
+                try:
+                    entry_storage = json.loads(entry_bytes.decode('utf-8'))
+                    
+                    # Check if this is a note with matching display ID
+                    if (entry_storage.get('entry_type') == 'note' and 
+                        entry_storage.get('entry_id') == display_id):
+                        
+                        encrypted_data = entry_storage.get('encrypted_data', {})
+                        
+                        # Decrypt note data
+                        note_data = decrypt_entry(master_key, encrypted_data)
+                        if not note_data:
+                            return None
+                        
+                        # Add metadata fields
+                        note_data['id'] = display_id  # Use display ID as the ID
+                        note_data['internal_id'] = internal_entry_id  # Store internal ID for reference
+                        note_data['category'] = entry_storage.get('category', 'Notes')
+                        note_data['entry_type'] = 'note'
+                        
+                        # Handle timestamps with storage data taking precedence
+                        storage_created = entry_storage.get('created_at')
+                        decrypted_created = note_data.get('created_at')
+                        note_data['created_at'] = storage_created if storage_created is not None else decrypted_created
+                        note_data['updated_at'] = entry_storage.get('updated_at', note_data.get('updated_at'))
+                        
+                        # Store raw timestamps for internal use
+                        note_data['created_raw'] = note_data.get('created_at')
+                        note_data['updated_raw'] = note_data.get('updated_at')
+                        
+                        # Add formatted timestamps for display if requested
+                        if formatted:
+                            note_data['created_formatted'] = self.format_datetime(note_data.get('created_at'))
+                            note_data['updated_formatted'] = self.format_datetime(note_data.get('updated_at'))
+                        
+                        return note_data
+                        
+                except:
+                    continue  # Skip invalid entries
+            
+            return None  # No note found with the given display ID
+            
+        except Exception as e:
+            print(f"[-] Error retrieving note by display ID {display_id}: {e}")
+            return None
+    
+    def _get_note_by_internal_id(self, master_key: bytes, internal_entry_id: int, formatted: bool = True) -> Optional[dict]:
+        """
+        Internal method to retrieve a note by its internal ID (for backward compatibility).
+        
+        Args:
+            master_key (bytes): Master encryption key
+            internal_entry_id (int): Internal entry identifier
+            formatted (bool): If True, include formatted timestamps
+        
+        Returns:
+            Optional[dict]: Decrypted note data with metadata, or None if not found.
+        """
+        try:
+            self.connect()
+            
+            if not self.eyr_file.load():
+                return None
+            
+            # Retrieve raw entry bytes from vault
+            entry_bytes = self.eyr_file.get_entry(internal_entry_id)
+            if not entry_bytes:
+                return None
+            
+            # Parse storage structure
+            entry_storage = json.loads(entry_bytes.decode('utf-8'))
+            
+            # Check if this is actually a note
+            if entry_storage.get('entry_type') != 'note':
+                return None  # This is not a note
+            
+            encrypted_data = entry_storage.get('encrypted_data', {})
+            
+            # Decrypt note data
+            note_data = decrypt_entry(master_key, encrypted_data)
+            if not note_data:
+                return None
+            
+            # Add metadata fields
+            # Use display ID if available, otherwise use internal ID as string
+            display_id = entry_storage.get('entry_id')
+            if display_id:
+                note_data['id'] = display_id
+            else:
+                note_data['id'] = str(internal_entry_id)  # Fallback to internal ID
+            
+            note_data['internal_id'] = internal_entry_id  # Store internal ID for reference
+            note_data['category'] = entry_storage.get('category', 'Notes')
+            note_data['entry_type'] = 'note'
+            
+            # Handle timestamps with storage data taking precedence
+            storage_created = entry_storage.get('created_at')
+            decrypted_created = note_data.get('created_at')
+            note_data['created_at'] = storage_created if storage_created is not None else decrypted_created
+            note_data['updated_at'] = entry_storage.get('updated_at', note_data.get('updated_at'))
+            
+            # Store raw timestamps for internal use
+            note_data['created_raw'] = note_data.get('created_at')
+            note_data['updated_raw'] = note_data.get('updated_at')
+            
+            # Add formatted timestamps for display if requested
+            if formatted:
+                note_data['created_formatted'] = self.format_datetime(note_data.get('created_at'))
+                note_data['updated_formatted'] = self.format_datetime(note_data.get('updated_at'))
+            
+            return note_data
+            
+        except Exception as e:
+            print(f"[-] Error retrieving note by internal ID {internal_entry_id}: {e}")
+            return None
+
+    def list_notes(self, master_key: bytes, limit: int = 1000) -> List[dict]:
+        """
+        List all vault notes with basic information.
+    
+        Args:
+            master_key (bytes): Master encryption key
+            limit (int): Maximum number of notes to return
+    
+        Returns:
+            List[dict]: List of note summaries (ID, title, category, content preview, creation date).
+        """
+        notes = []
+    
+        try:
+            self.connect()
+
+            if not self.eyr_file.load():
+                return notes
+        
+            # Get list of all entry IDs
+            internal_entry_ids = self.eyr_file.list_entries()
+        
+            # Process entries up to limit
+            for internal_entry_id in internal_entry_ids[:limit]:
+                # Get entry type first without full decryption
+                entry_bytes = self.eyr_file.get_entry(internal_entry_id)
+                if entry_bytes:
+                    try:
+                        entry_storage = json.loads(entry_bytes.decode('utf-8'))
+                        if entry_storage.get('entry_type') == 'note':
+                            note_summary = {'internal_id': internal_entry_id}
+                            
+                            # Get the display ID from storage
+                            display_id = entry_storage.get('entry_id')
+                            if display_id:
+                                note_summary['id'] = display_id
+                            else:
+                                note_summary['id'] = str(internal_entry_id)  # Fallback
+                        
+                            # Get full note to extract summary information
+                            note_full = self.get_note(master_key, note_summary['id'], formatted=False)
+                            if note_full:
+                                note_summary['title'] = note_full.get('title', 'Untitled')
+                                note_summary['category'] = note_full.get('category', 'Notes')
+                                note_summary['entry_type'] = 'note'
+                            
+                                # Create content preview
+                                content = note_full.get('content', '')
+                                note_summary['content_preview'] = content[:50] + '...' if len(content) > 50 else content
+                            
+                                # Format creation date for display
+                                created_at = note_full.get('created_raw')
+                                if created_at:
+                                    note_summary['created_at'] = self.format_timestamp(created_at)
+                                else:
+                                    note_summary['created_at'] = ''
+                            
+                                notes.append(note_summary)
+                    except:
+                        continue  # Skip invalid entries
+        
+        except Exception as e:
+            print(f"[-] Error listing notes: {e}")
+    
+        return notes
+
+    def search_notes(self, master_key: bytes, search_term: str) -> List[dict]:
+        """
+        Search notes by content across title, content, and category.
+    
+        Args:
+            master_key (bytes): Master encryption key
+            search_term (str): Search query (case-insensitive)
+    
+        Returns:
+            List[dict]: List of matching notes with full details.
+        """
+        results = []
+        search_lower = search_term.lower()
+    
+        try:
+            self.connect()
+        
+            if not self.eyr_file.load():
+                return results
+        
+            internal_entry_ids = self.eyr_file.list_entries()
+        
+            # Normalize search term for category matching
+            normalized_search = self._normalize_category_name(search_term)
+        
+            # Search through all entries
+            for internal_entry_id in internal_entry_ids:
+                # Check entry type first
+                entry_bytes = self.eyr_file.get_entry(internal_entry_id)
+                if entry_bytes:
+                    try:
+                        entry_storage = json.loads(entry_bytes.decode('utf-8'))
+                        if entry_storage.get('entry_type') != 'note':
+                            continue  # Skip non-note entries
+                    except:
+                        continue  # Skip invalid entries
+                
+                # Get display ID
+                display_id = entry_storage.get('entry_id', str(internal_entry_id))
+                note_full = self.get_note(master_key, display_id, formatted=True)
+                if not note_full:
+                    continue
+            
+                # Check each searchable field for match
+                matches = False
+                if search_lower in note_full.get('title', '').lower():
+                    matches = True
+                elif search_lower in note_full.get('content', '').lower():
+                    matches = True
+                else:
+                    # Check category with flexible matching
+                    entry_category = note_full.get('category', '')
+                    if entry_category:
+                        normalized_category = self._normalize_category_name(entry_category)
+                        if normalized_search and normalized_search in normalized_category:
+                            matches = True
+            
+                # If match found, prepare result for display
+                if matches:
+                    # Ensure formatted timestamps
+                    if 'created_formatted' in note_full:
+                        note_full['created_at'] = note_full['created_formatted']
+                    else:
+                        note_full['created_at'] = self.format_datetime(note_full.get('created_raw'))
+
+                    if 'updated_formatted' in note_full:
+                        note_full['updated_at'] = note_full['updated_formatted']
+                    else:
+                        note_full['updated_at'] = self.format_datetime(note_full.get('updated_raw'))
+                
+                    # Add content preview
+                    content = note_full.get('content', '')
+                    note_full['content_preview'] = content[:50] + '...' if len(content) > 50 else content
+                
+                    results.append(note_full)
+    
+        except Exception as e:
+            print(f"[-] Error searching notes: {e}")
+    
+        return results
+
+    def get_notes_by_category(self, master_key: bytes, category: str) -> List[dict]:
+        """
+        Filter notes by category with flexible matching.
+    
+        Args:
+            master_key (bytes): Master encryption key
+            category (str): Category name to filter by
+    
+        Returns:
+            List[dict]: List of notes in the specified category.
+        """
+        notes = []
+    
+        try:
+            self.connect()
+
+            if not self.eyr_file.load():
+                return notes
+        
+            internal_entry_ids = self.eyr_file.list_entries()
+        
+            # Normalize the search category for flexible matching
+            normalized_search = self._normalize_category_name(category)
+
+            # Filter notes by category with flexible matching
+            for internal_entry_id in internal_entry_ids:
+                # Check entry type first
+                entry_bytes = self.eyr_file.get_entry(internal_entry_id)
+                if entry_bytes:
+                    try:
+                        entry_storage = json.loads(entry_bytes.decode('utf-8'))
+                        if entry_storage.get('entry_type') != 'note':
+                            continue  # Skip non-note entries
+                    except:
+                        continue  # Skip invalid entries
+                
+                # Get display ID
+                display_id = entry_storage.get('entry_id', str(internal_entry_id))
+                note = self.get_note(master_key, display_id, formatted=True)
+                if note:
+                    note_category = note.get('category', 'Notes')
+                    normalized_entry = self._normalize_category_name(note_category)
+
+                    # Check if normalized categories match
+                    if normalized_entry == normalized_search:
+                        # Ensure formatted timestamps
+                        if 'created_formatted' in note:
+                            note['created_at'] = note['created_formatted']
+                        else:
+                            note['created_at'] = self.format_datetime(note.get('created_raw'))
+                    
+                        if 'updated_formatted' in note:
+                            note['updated_at'] = note['updated_formatted']
+                        else:
+                            note['updated_at'] = self.format_datetime(note.get('updated_raw'))
+                    
+                        # Add content preview
+                        content = note.get('content', '')
+                        note['content_preview'] = content[:50] + '...' if len(content) > 50 else content
+                    
+                        notes.append(note)
+    
+        except Exception as e:
+            print(f"[-] Error filtering notes by category: {e}")
+    
+        return notes
+
+    def update_note(self, master_key: bytes, entry_id: str, new_data: dict) -> bool:
+        """
+        Update an existing note with new data.
+    
+        Args:
+            master_key (bytes): Master encryption key
+            entry_id (str): Entry identifier (display ID like "EYR-A9F3Q2")
+            new_data (dict): Updated note data
+    
+        Returns:
+            bool: True if update succeeded.
+        """
+        try:
+            self.connect()
+        
+            if not self.eyr_file.load():
+                return False
+        
+            # Get current note data
+            current = self.get_note(master_key, entry_id, formatted=False)
+            if not current:
+                return False
+            
+            # Get internal ID from current note
+            internal_entry_id = current.get('internal_id')
+            if not internal_entry_id:
+                return False
+        
+            # Merge current data with updates
+            updated_data = current.copy()
+            updated_data.update(new_data)
+        
+            # Update modification timestamp
+            current_time = time.time()
+            updated_data['updated_at'] = current_time
+            updated_data['entry_type'] = 'note'  # Ensure type is preserved
+        
+            # Remove internal metadata fields before encryption
+            for field in ['id', 'internal_id', 'category', 'created_raw', 'updated_raw']:
+                updated_data.pop(field, None)
+        
+            # Encrypt updated note
+            encrypted = encrypt_entry(master_key, updated_data, internal_entry_id)
+        
+            # Get current storage to preserve other fields
+            entry_bytes = self.eyr_file.get_entry(internal_entry_id)
+            if not entry_bytes:
+                return False
+            
+            entry_storage = json.loads(entry_bytes.decode('utf-8'))
+        
+            # Update storage structure
+            entry_storage['encrypted_data'] = encrypted
+            entry_storage['category'] = new_data.get('category', current.get('category', 'Notes'))
+            entry_storage['entry_type'] = 'note'
+            entry_storage['updated_at'] = current_time
+        
+            # Serialize and store
+            entry_json = json.dumps(entry_storage, ensure_ascii=False)
+            entry_bytes = entry_json.encode('utf-8')
+        
+            return self.eyr_file.update_entry(internal_entry_id, entry_bytes)
+        
+        except Exception as e:
+            print(f"[-] Error updating note: {e}")
+            return False
+
+    def delete_note(self, entry_id: str) -> bool:
+        """
+        Permanently remove a note from the vault.
+    
+        Args:
+            entry_id (str): Entry identifier (display ID like "EYR-A9F3Q2")
+    
+        Returns:
+            bool: True if deletion succeeded.
+        """
+        # Use the same delete_entry method since notes are stored as entries
+        return self.delete_entry(entry_id)
+
     # ==========================================================================
     # VAULT MANAGEMENT OPERATIONS
     # ==========================================================================
@@ -1362,31 +1727,50 @@ class VaultDatabase:
                 return False
             
             # Get list of all entry IDs
-            entry_ids = self.eyr_file.list_entries()
+            internal_entry_ids = self.eyr_file.list_entries()
             
             # Re-encrypt each entry
-            for entry_id in entry_ids:
-                entry_data = self.get_entry(old_key, entry_id, formatted=False)
+            for internal_entry_id in internal_entry_ids:
+                # Get entry type first
+                entry_bytes = self.eyr_file.get_entry(internal_entry_id)
+                if not entry_bytes:
+                    continue
+                    
+                try:
+                    entry_storage = json.loads(entry_bytes.decode('utf-8'))
+                    entry_type = entry_storage.get('entry_type', 'password')
+                except:
+                    continue  # Skip invalid entries
+                
+                # Decrypt based on entry type
+                if entry_type == 'note':
+                    display_id = entry_storage.get('entry_id', str(internal_entry_id))
+                    entry_data = self.get_note(old_key, display_id, formatted=False)
+                else:
+                    display_id = entry_storage.get('entry_id', str(internal_entry_id))
+                    entry_data = self.get_entry(old_key, display_id, formatted=False)
+                    
                 if not entry_data:
                     return False  # Failed to decrypt an entry
                 
                 # Remove internal fields before re-encryption
-                for field in ['id', 'category', 'created_raw', 'updated_raw']:
+                for field in ['id', 'internal_id', 'category', 'created_raw', 'updated_raw']:
                     entry_data.pop(field, None)
                 
+                # Ensure entry type is preserved
+                entry_data['entry_type'] = entry_type
+                
                 # Re-encrypt with new key
-                encrypted = encrypt_entry(new_key, entry_data, entry_id)
+                encrypted = encrypt_entry(new_key, entry_data, internal_entry_id)
                 
                 # Update entry in vault
-                entry_bytes = self.eyr_file.get_entry(entry_id)
-                if entry_bytes:
-                    entry_storage = json.loads(entry_bytes.decode('utf-8'))
-                    entry_storage['encrypted_data'] = encrypted
-                    updated_bytes = json.dumps(entry_storage, ensure_ascii=False).encode('utf-8')
-                    
-                    if not self.eyr_file.update_entry(entry_id, updated_bytes):
-                        return False  # Failed to update entry
-                        # Update verification token in metadata with new key
+                entry_storage['encrypted_data'] = encrypted
+                updated_bytes = json.dumps(entry_storage, ensure_ascii=False).encode('utf-8')
+                
+                if not self.eyr_file.update_entry(internal_entry_id, updated_bytes):
+                    return False  # Failed to update entry
+            
+            # Update verification token in metadata with new key
             verification_token = os.urandom(32)
             encryption_key = new_key[:KEY_SIZE]
             nonce, ciphertext, tag = encrypt_data(encryption_key, verification_token)
@@ -1414,6 +1798,8 @@ class VaultDatabase:
             Optional[dict]: Vault information including:
                 - categories: Count of entries per category
                 - total_entries: Total number of entries
+                - password_entries: Number of password entries
+                - notes: Number of secure notes
                 - version: Vault format version
                 - created_at: Vault creation timestamp (formatted)
         """
@@ -1425,18 +1811,44 @@ class VaultDatabase:
             
             info = {}
             
-            # Count entries by category
-            categories = {}
-            entry_ids = self.eyr_file.list_entries()
+            # Count entries by category and type
+            password_categories = {}
+            note_categories = {}
+            password_count = 0
+            note_count = 0
+            internal_entry_ids = self.eyr_file.list_entries()
             
-            for entry_id in entry_ids:
-                entry = self.get_entry(master_key, entry_id, formatted=False)
-                if entry:
-                    category = entry.get('category', 'General')
-                    categories[category] = categories.get(category, 0) + 1
+            for internal_entry_id in internal_entry_ids:
+                entry_bytes = self.eyr_file.get_entry(internal_entry_id)
+                if not entry_bytes:
+                    continue
+                    
+                try:
+                    entry_storage = json.loads(entry_bytes.decode('utf-8'))
+                    entry_type = entry_storage.get('entry_type', 'password')
+                    
+                    if entry_type == 'note':
+                        note_count += 1
+                        display_id = entry_storage.get('entry_id', str(internal_entry_id))
+                        note = self.get_note(master_key, display_id, formatted=False)
+                        if note:
+                            category = note.get('category', 'Notes')
+                            note_categories[category] = note_categories.get(category, 0) + 1
+                    else:
+                        password_count += 1
+                        display_id = entry_storage.get('entry_id', str(internal_entry_id))
+                        entry = self.get_entry(master_key, display_id, formatted=False)
+                        if entry:
+                            category = entry.get('category', 'General')
+                            password_categories[category] = password_categories.get(category, 0) + 1
+                except:
+                    continue
             
-            info['categories'] = categories
-            info['total_entries'] = len(entry_ids)
+            info['password_categories'] = password_categories
+            info['note_categories'] = note_categories
+            info['total_entries'] = len(internal_entry_ids)
+            info['password_entries'] = password_count
+            info['notes'] = note_count
             
             # Add vault metadata
             if self.eyr_file.metadata:
@@ -1452,13 +1864,13 @@ class VaultDatabase:
     # PASSWORD HISTORY MANAGEMENT
     # ==========================================================================
     
-    def get_password_history(self, master_key: bytes, entry_id: int) -> Optional[List[Dict]]:
+    def get_password_history(self, master_key: bytes, entry_id: str) -> Optional[List[Dict]]:
         """
         Retrieve password history for an entry with masked passwords.
         
         Args:
             master_key (bytes): Master encryption key
-            entry_id (int): Entry identifier
+            entry_id (str): Entry identifier (display ID like "EYR-A9F3Q2")
         
         Returns:
             Optional[List[Dict]]: List of historical password entries with:
@@ -1512,13 +1924,13 @@ class VaultDatabase:
             print(f"[-] Error retrieving password history: {e}")
             return None
     
-    def get_password_history_with_passwords(self, master_key: bytes, entry_id: int) -> Optional[List[Dict]]:
+    def get_password_history_with_passwords(self, master_key: bytes, entry_id: str) -> Optional[List[Dict]]:
         """
         Retrieve password history for an entry WITH plaintext passwords.
         
         Args:
             master_key (bytes): Master encryption key
-            entry_id (int): Entry identifier
+            entry_id (str): Entry identifier (display ID like "EYR-A9F3Q2")
         
         Returns:
             Optional[List[Dict]]: List of password entries including:
@@ -1621,13 +2033,13 @@ class VaultDatabase:
             print(f"[-] Error retrieving password history with passwords: {e}")
             return None
     
-    def clear_password_history(self, master_key: bytes, entry_id: int) -> bool:
+    def clear_password_history(self, master_key: bytes, entry_id: str) -> bool:
         """
         Clear all password history for an entry.
         
         Args:
             master_key (bytes): Master encryption key
-            entry_id (int): Entry identifier
+            entry_id (str): Entry identifier (display ID like "EYR-A9F3Q2")
         
         Returns:
             bool: True if history was successfully cleared.
@@ -1646,6 +2058,11 @@ class VaultDatabase:
             if not current:
                 return False
             
+            # Get internal ID from current entry
+            internal_entry_id = current.get('internal_id')
+            if not internal_entry_id:
+                return False
+            
             # Clear password history
             if 'password_history' in current:
                 current['password_history'] = []
@@ -1653,26 +2070,32 @@ class VaultDatabase:
             # Update modification timestamp
             current_time = time.time()
             current['updated_at'] = current_time
+            current['entry_type'] = 'password'  # Ensure type is preserved
             
             # Remove internal fields
-            for field in ['id', 'category', 'created_raw', 'updated_raw']:
+            for field in ['id', 'internal_id', 'category', 'created_raw', 'updated_raw']:
                 current.pop(field, None)
             
             # Re-encrypt entry without history
-            encrypted = encrypt_entry(master_key, current, entry_id)
+            encrypted = encrypt_entry(master_key, current, internal_entry_id)
+            
+            # Get current storage
+            entry_bytes = self.eyr_file.get_entry(internal_entry_id)
+            if not entry_bytes:
+                return False
+            
+            entry_storage = json.loads(entry_bytes.decode('utf-8'))
             
             # Update storage
-            entry_storage = {
-                'encrypted_data': encrypted,
-                'category': current.get('category', 'General'),
-                'created_at': current.get('created_raw', current_time),
-                'updated_at': current_time
-            }
+            entry_storage['encrypted_data'] = encrypted
+            entry_storage['category'] = current.get('category', 'General')
+            entry_storage['entry_type'] = 'password'
+            entry_storage['updated_at'] = current_time
             
             entry_json = json.dumps(entry_storage, ensure_ascii=False)
             entry_bytes = entry_json.encode('utf-8')
             
-            return self.eyr_file.update_entry(entry_id, entry_bytes)
+            return self.eyr_file.update_entry(internal_entry_id, entry_bytes)
             
         except Exception as e:
             print(f"[-] Error clearing password history: {e}")

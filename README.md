@@ -10,7 +10,6 @@ The primary goal of Eyrie is to provide a lightweight, self-contained password m
 
 - **Secure Vault Storage**: Passwords are stored in a custom encrypted `.eyr` file format with integrity checks.
 - **Encryption**: Uses Argon2id for key derivation, AES-GCM for symmetric encryption, and HMAC-SHA256 for authentication.
-- **Two-Factor Authentication (2FA)**: TOTP-based 2FA with recovery codes and trusted device support.
 - **Password Generation**: Cryptographically secure random passwords with customizable options (length, character sets, exclusions).
 - **Password History**: Tracks changes to passwords for auditing and reuse prevention.
 - **Interactive CLI**: Command-line interface with auto-completion, history, and secure input prompts.
@@ -18,6 +17,7 @@ The primary goal of Eyrie is to provide a lightweight, self-contained password m
 - **Validation**: Strong password requirements, entropy checks, and breach detection simulation.
 - **Clipboard Integration**: Secure copying of passwords with auto-clear timeout.
 - **Vault Management**: Change master password, view vault stats, and lock sessions.
+- **Note Storage**: Eyrie can now store private notes.
 
 ## Benefits
 
@@ -34,7 +34,6 @@ The primary goal of Eyrie is to provide a lightweight, self-contained password m
 
 Unlike mainstream password managers (e.g., Bitwarden or KeePass), Eyrie stands out with:
 - **Custom File Format (.eyr)**: A binary format with built-in compression, indexing, and metadata for efficient storage and retrieval.
-- **Integrated 2FA Management**: Seamless setup with QR code display in terminal using ASCII art.
 - **Password Reuse Detection**: Warns during updates if a new password matches history.
 - **Secure Erase**: Explicit memory sanitization for keys and sensitive data.
 - **Minimal Dependencies**: Relies on Python standard libraries where possible, with optional third-party for UI enhancements.
@@ -121,39 +120,103 @@ python3 eyrie.py import --backup-path backup.enc --password "your_backup_pass" -
 python3 eyrie.py change-master --vault vault.eyr
 ```
 
-- 2FA Commands:
+*Use '--help' for full options.*
+
+## Non-Interactive
+
+1. Add Entry
 
 ```bash
-python3 eyrie.py 2fa setup --vault vault.eyr
-python3 eyrie.py 2fa disable --vault vault.eyr
-python3 eyrie.py 2fa status --vault vault.eyr
+python3 eyrie.py add-entry --vault vault.eyr --password MASTER_PASSWORD --title "SERVICE_NAME" --username "USERNAME" [OPTIONS]
 ```
 
-*Use '--help' for full options.*
+2. Get Entry
+
+```bash
+python3 eyrie.py get-entry --vault vault.eyr --password MASTER_PASSWORD --id ENTRY_ID [OPTIONS]
+```
+
+3. List Entries
+
+```bash
+python3 eyrie.py list-entries --vault vault.eyr --password MASTER_PASSWORD [OPTIONS]
+```
+
+4. Update Entry
+
+```bash
+python3 eyrie.py update-entry --vault vault.eyr --password MASTER_PASSWORD --id ENTRY_ID [OPTIONS]
+```
+
+5. Delete Entry
+
+```bash
+python3 eyrie.py delete-entry --vault vault.eyr --password MASTER_PASSWORD --id ENTRY_ID [OPTIONS]
+```
+
+6. Add Note
+
+```bash
+python3 eyrie.py add-note --vault vault.eyr --password MASTER_PASSWORD --title "NOTE_TITLE" [OPTIONS]
+```
+
+7. Get Note
+
+```bash
+python3 eyrie.py get-note --vault vault.eyr --password MASTER_PASSWORD --id NOTE_ID
+```
+
+8. List Notes
+
+```bash
+python3 eyrie.py list-notes --vault vault.eyr --password MASTER_PASSWORD [OPTIONS]
+```
+
+9. Update Note
+
+```bash
+python3 eyrie.py update-note --vault vault.eyr --password MASTER_PASSWORD --id NOTE_ID [OPTIONS]
+```
+
+10. Search Notes
+
+```bash
+python3 eyrie.py search-notes --vault vault.eyr --password MASTER_PASSWORD --term "SEARCH_TERM"
+```
+
+11. Delete Notes
+
+```bash
+python3 eyrie.py delete-note --vault vault.eyr --password MASTER_PASSWORD --id NOTE_ID [OPTIONS]
+```
 
 ## Interactive 
 
 Here are the available commands:
 
-| Command              | Alias    | Description                                                                                   |
-|----------------------|----------|-----------------------------------------------------------------------------------------------|
-| `add_entry`          | `ae`     | Create a new credential entry (title, username, password, URL, category)                     |
-| `list_entry`         | `le`     | Show table of all stored entries (ID, title, username, category, created)                    |
-| `get_entry`          | `ge`     | View full details of one entry (including the password)                                      |
-| `update_entry`       | `ue`     | Modify an existing entry (username, password, URL, category, etc.)                           |
-| `delete_entry`       | `de`     | Permanently remove an entry (with confirmation)                                              |
-| `password_history`   | `ph`     | Show password change history for an entry (masked previous passwords + dates)               |
-| `reveal_version`     | `rv`     | Reveal plaintext password of a specific history version                                      |
-| `clear_history`      | `ch`     | Delete all previous password versions for an entry (keeps current password)                  |
-| `gen_passwd`         | `gp`     | Generate a new secure random password (configurable length & character types)               |
-| `ch_master_passwd`   | `cmp`    | Change the master password (re-encrypts entire vault with new key)                           |
-| `vault_info`         | `vi`     | Show vault statistics & metadata (entry count, dates, 2FA status, size, …)                  |
-| `export_vault`       | `ev`     | Create encrypted backup of the complete vault                                                |
-| `setup_2fa`          | `2fa`    | Enable Two-Factor Authentication (shows QR code + recovery codes)                            |
-| `disable_2fa`        | `d2fa`   | Turn off Two-Factor Authentication                                                           |
-| `show_2fa`           | `s2fa`   | Display current 2FA status & remaining unused recovery codes                                 |
-| `help`               | `h`      | Show this help screen                                                                        |
-| `exit`               | `q`, `quit` | Exit interactive mode and lock vault                                                      |
+| Command              | Alias       | Description                                                                                   |
+|----------------------|------------|-----------------------------------------------------------------------------------------------|
+| add_entry            | ae         | Create a new credential entry (title, username, password, URL, category)                     |
+| list_entry           | le         | Show table of all stored entries (ID, title, username, category, created)                    |
+| get_entry            | ge         | View full details of one entry (including the password)                                      |
+| update_entry         | ue         | Modify an existing entry (username, password, URL, category, etc.)                           |
+| delete_entry         | de         | Permanently remove an entry (with confirmation)                                              |
+| password_history     | ph         | Show password change history for an entry (masked previous passwords + dates)               |
+| reveal_version       | rv         | Reveal plaintext password of a specific history version                                      |
+| clear_history        | ch         | Delete all previous password versions for an entry (keeps current password)                  |
+| add_note             | an         | Create a new secure note (prompts for title, category, content)                               |
+| list_notes           | ln         | Display all stored notes with IDs and titles                                                 |
+| get_note             | gn         | Retrieve specific note details by ID (shows content)                                         |
+| update_note          | un         | Update specific note details by ID                                                           |
+| search_notes         | sn         | Search notes by title, content, or category                                                 |
+| delete_note          | dn         | Remove note permanently (requires confirmation)                                             |
+| gen_passwd           | gp         | Generate a new secure random password (configurable length & character types)               |
+| ch_master_passwd     | cmp        | Change the master password (re-encrypts entire vault with new key)                           |
+| vault_info           | vi         | Show vault statistics & metadata (entry count, dates, 2FA status, size, …)                  |
+| export_vault         | ev         | Create encrypted backup of the complete vault                                                |
+| help                 | h          | Show this help screen                                                                        |
+| exit                 | q, quit    | Exit interactive mode and lock vault                                                         |
+
 
 ## Example Session:
 
@@ -171,7 +234,7 @@ Category (optional): Web
 
 Eyrie follows a modular design:
 
-- **Modules**: crypto.py (encryption), database.py (vault ops), tfa.py (2FA), ui.py (display), validation.py (checks), export_import.py (backups), password_generator.py (gen), eyr_format.py (file format).
+- **Modules**: crypto.py (encryption), database.py (vault ops), notes.py (notes), ui.py (display), validation.py (checks), export_import.py (backups), password_generator.py (gen), eyr_format.py (file format).
 - **Core Flow**: User authenticates → Derive key → Decrypt vault → Perform ops → Encrypt changes.
 
 ## ASCII Flowchart of Functionality

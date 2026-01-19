@@ -115,7 +115,7 @@ def display_entries_table(entries: List[Dict], show_password: bool = False) -> N
     headers = ['ID', 'Title', 'Username/Email', 'Category', 'Created']
     if show_password:
         headers.append('Password')
-    
+
     # Calculate optimal column widths based on data
     col_widths = []
     for i, header in enumerate(headers):
@@ -176,7 +176,7 @@ def display_entry(entry: Dict, show_password: bool = True, copy_password: bool =
     
     Example Output:
         ==================================================
-        Entry #1
+        Entry <ID>
         ==================================================
         Title:       Google Account
         Username:    user@gmail.com
@@ -189,7 +189,7 @@ def display_entry(entry: Dict, show_password: bool = True, copy_password: bool =
     """
     # Print entry header
     print("=" * 50)
-    print(f"Entry #{entry.get('id', 'N/A')}")
+    print(f"Entry {entry.get('id', 'N/A')}")
     print("=" * 50)
     
     # Display basic entry information

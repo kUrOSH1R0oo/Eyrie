@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Eyrie Password Manager v1.0.1
+Eyrie Password Manager v1.1.0
 A secure, terminal-based password management system with encryption,
-Two-Factor Authentication, and comprehensive credential management.
+and comprehensive credential management.
 
 Author: Kur0Sh1r0 (A1SBERG)
 License: GNU General Public License
@@ -35,7 +35,7 @@ from prompt_toolkit.key_binding import KeyBindings
 # ==============================================================================
 # CUSTOM MODULE IMPORTS
 # ==============================================================================
-from modules import crypto, database, password_generator, ui, validation, export_import, tfa
+from modules import crypto, database, password_generator, ui, validation, export_import, notes
 
 # ==============================================================================
 # CONSTANTS AND GLOBAL CONFIGURATION
@@ -51,7 +51,7 @@ __/\\\\\\\\\\\\\\\__________________________________________________
      _\/\\\_________________\//\\\____\/\\\___\///__\/\\\__/\\\\\\\\\\\__   
       _\/\\\______________/\\_/\\\_____\/\\\_________\/\\\_\//\\///////___  
        _\/\\\\\\\\\\\\\\\_\//\\\\/______\/\\\_________\/\\\__\//\\\\\\\\\\_ 
-        _\///////////////___\////________\///__________\///____\//////////__ v1.0.1
+        _\///////////////___\////________\///__________\///____\//////////__ v1.1.0
                                                         - A1SBERG
 """
 
@@ -66,6 +66,12 @@ Here are the available commands you can use:
 'get_entry' (ge) - Retrieve specific entry details by ID (shows password)
 'update_entry' (ue) - Update specific entry details by ID
 'delete_entry' (de) - Remove entry permanently (requires confirmation)
+'add_note' (an) - Create new secure note (prompts for title, category, content)
+'list_notes' (ln) - Display all stored notes with IDs and titles
+'get_note' (gn) - Retrieve specific note details by ID (shows content)
+'update_note' (un) - Update specific note details by ID
+'search_notes' (sn) - Search notes by title, content, or category
+'delete_note' (dn) - Remove note permanently (requires confirmation)
 'password_history' (ph) - View password history for an entry (shows masked passwords)
 'reveal_version' (rv) - Reveal plaintext password of specific history version (requires master password)
 'clear_history' (ch) - Clear password history for an entry (requires confirmation)
@@ -73,9 +79,6 @@ Here are the available commands you can use:
 'ch_master_passwd' (cmp)- Change master vault password (re-encrypts all entries)
 'vault_info' (vi) - View vault statistics and metadata
 'export_vault' (ev) - Create encrypted backup of entire vault
-'setup_2fa' (2fa) - Enable Two-Factor Authentication for this vault
-'disable_2fa' (d2fa) - Disable Two-Factor Authentication
-'show_2fa' (s2fa) - Show 2FA status and recovery codes
 'help' (h) - Show this help message
 'exit' (quit, q) - Exit the program
 
@@ -90,6 +93,12 @@ COMMAND_ALIASES = {
     'get_entry': 'get_entry',
     'update_entry': 'update_entry',
     'delete_entry': 'delete_entry',
+    'add_note': 'add_note',
+    'list_notes': 'list_notes',
+    'get_note': 'get_note',
+    'update_note': 'update_note',
+    'search_notes': 'search_notes',
+    'delete_note': 'delete_note',
     'password_history': 'password_history',
     'reveal_version': 'reveal_version',
     'clear_history': 'clear_history',
@@ -97,9 +106,6 @@ COMMAND_ALIASES = {
     'ch_master_passwd': 'ch_master_passwd',
     'vault_info': 'vault_info',
     'export_vault': 'export_vault',
-    'setup_2fa': 'setup_2fa',
-    'disable_2fa': 'disable_2fa',
-    'show_2fa': 'show_2fa',
     'help': 'help',
     'exit': 'exit',
     'quit': 'exit',
@@ -110,6 +116,12 @@ COMMAND_ALIASES = {
     'ge': 'get_entry',
     'ue': 'update_entry',
     'de': 'delete_entry',
+    'an': 'add_note',
+    'ln': 'list_notes',
+    'gn': 'get_note',
+    'un': 'update_note',
+    'sn': 'search_notes',
+    'dn': 'delete_note',
     'ph': 'password_history',
     'rv': 'reveal_version',
     'ch': 'clear_history',
@@ -117,9 +129,6 @@ COMMAND_ALIASES = {
     'cmp': 'ch_master_passwd',
     'vi': 'vault_info',
     'ev': 'export_vault',
-    '2fa': 'setup_2fa',
-    'd2fa': 'disable_2fa',
-    's2fa': 'show_2fa',
     'h': 'help',
     'q': 'exit',
 }
@@ -136,14 +145,22 @@ for alias, command in COMMAND_ALIASES.items():
 # VALIDATORS
 # ==============================================================================
 
-class NumberValidator(Validator):
-    """Validator for numeric input fields."""
+class EYRIDValidator(Validator):
+    """Validator for EYR ID fields (format: EYR-XXXXXX where X is uppercase letter or digit)."""
     
     def validate(self, document):
-        """Ensure input contains only digits."""
-        text = document.text
-        if text and not text.isdigit():
-            raise ValidationError(message='Please enter a valid number')
+        """Ensure input matches EYR ID format: EYR- followed by 6 uppercase letters/digits."""
+        text = document.text.strip()
+        
+        if not text:
+            return  # Allow empty input for optional fields
+        
+        # Check if it matches the pattern: EYR-XXXXXX
+        pattern = r'^EYR-[A-Z0-9]{6}$'
+        if not re.match(pattern, text):
+            raise ValidationError(
+                message='Please enter a valid EYR ID (format: EYR-XXXXXX where X is uppercase letter or digit)'
+            )
 
 # ==============================================================================
 # MAIN EYRIE CLASS
@@ -158,7 +175,6 @@ class Eyrie:
     - Session management
     - Command routing and execution
     - Cryptographic operations
-    - 2FA management
     """
     
     def __init__(self):
@@ -166,7 +182,6 @@ class Eyrie:
         self.db = None              # Database connection object
         self.master_key = None      # Current session encryption key
         self.session_start = None   # Session timestamp for timeout tracking
-        self.device_id = tfa.tfa_manager.get_device_id()  # Unique device identifier for 2FA
         self.history = InMemoryHistory()  # Command history for current session
         self.auto_suggest = AutoSuggestFromHistory()  # Command suggestions
         self.bindings = KeyBindings()  # Custom key bindings
@@ -290,12 +305,13 @@ class Eyrie:
         print("[-] Vault initialization failed")
         return False
     
-    def unlock_vault(self, vault_path="vault.eyr"):
+    def unlock_vault(self, vault_path="vault.eyr", master_password=None):
         """
         Authenticate and unlock an existing vault.
         
         Args:
             vault_path (str): Path to the vault file
+            master_password (str, optional): Master password (if provided, no prompt)
             
         Returns:
             bool: True if authentication succeeded
@@ -315,10 +331,14 @@ class Eyrie:
         
         # Authentication loop with attempt limiting
         while attempts < max_attempts:
-            master_pwd = prompt(
-                "Master password: ",
-                is_password=True
-            )
+            if master_password is None:
+                master_pwd = prompt(
+                    "Master password: ",
+                    is_password=True
+                )
+            else:
+                master_pwd = master_password
+                attempts = max_attempts  # Only one attempt when password is provided
             
             # Temporary connection for key verification
             temp_db = database.VaultDatabase(vault_path)
@@ -359,499 +379,176 @@ class Eyrie:
             
             if self.db.eyr_file and self.db.eyr_file.load():
                 if self.db.verify_master_key(test_key):
-                    # Check if 2FA is enabled
-                    tfa_settings = self.db.get_tfa_settings(test_key)
-                    
-                    if tfa_settings and tfa_settings.get('enabled'):
-                        print("[+] 2FA enabled for this vault")
-                        
-                        # Check if device is already trusted
-                        trusted_devices = tfa_settings.get('trusted_devices', [])
-                        is_trusted = tfa.tfa_manager.is_trusted_device(self.device_id, trusted_devices)
-                        
-                        if not is_trusted:
-                            # Require 2FA verification for untrusted devices
-                            if not self._verify_2fa(test_key):
-                                print("[-] 2FA verification failed")
-                                crypto.secure_erase_key(test_key)
-                                crypto.secure_erase(master_pwd)
-                                return False
-                            
-                            # Option to trust the current device
-                            trust = prompt("Trust this device? (No 2FA required for 30 days) [Y/n]: ").strip().lower()
-                            if trust != 'n':
-                                self.db.update_trusted_device(test_key, self.device_id, add=True)
-                                print("[+] Device trusted for 30 days")
-                            else:
-                                print("[+] Device not trusted - 2FA will be required next time")
-                    
                     # Authentication successful
                     self.master_key = test_key
                     self.session_start = time.time()
                     validation.clear_failed_attempts(vault_path)
                     crypto.secure_erase(master_pwd)
-                    clear()  # Clear screen for security
-                    print(BANNER)
+                    if master_password is None:
+                        clear()  # Clear screen for security
+                        print(BANNER)
                     print("[+] Eyrie vault successfully unlocked")
                     return True
             
             # Authentication failed
             attempts += 1
-            remaining = max_attempts - attempts
-            print(f"[-] Authentication failed. Attempts remaining: {remaining}")
-            validation.record_failed_attempt(vault_path)
+            if master_password is None:
+                remaining = max_attempts - attempts
+                print(f"[-] Authentication failed. Attempts remaining: {remaining}")
+                validation.record_failed_attempt(vault_path)
         
         print("[-] Maximum authentication attempts reached")
         return False
     
     # ==========================================================================
-    # TWO-FACTOR AUTHENTICATION MANAGEMENT
+    # CREDENTIAL MANAGEMENT - INTERACTIVE
     # ==========================================================================
     
-    def _verify_2fa(self, master_key: bytes) -> bool:
-        """
-        Verify Two-Factor Authentication using TOTP or recovery codes.
-        
-        Args:
-            master_key (bytes): The master encryption key
-            
-        Returns:
-            bool: True if 2FA verification succeeded
-        """
-        print("[+] Two-Factor Authentication Required")
-        print("Options:")
-        print("  1. Enter TOTP code from authenticator app")
-        print("  2. Use recovery code")
-        
-        choice = prompt("Select option [1/2]: ").strip()
-        
-        # TOTP code verification
-        if choice == "1":
-            for attempt in range(3):
-                code = prompt(f"Enter 6-digit code (attempt {attempt + 1}/3): ").strip().replace(" ", "")
-                
-                if not code.isdigit() or len(code) != 6:
-                    print("[-] Invalid code format")
-                    continue
-                
-                if self.db.verify_totp_code(master_key, code):
-                    print("[+] 2FA verification successful")
-                    return True
-                else:
-                    print("[-] Invalid 2FA code")
-            
-            print("[-] Too many failed attempts")
-            return False
-        
-        # Recovery code verification
-        elif choice == "2":
-            code = prompt("Enter recovery code: ").strip().replace(" ", "").upper()
-            
-            if len(code) != 8:
-                print("[-] Invalid recovery code format")
-                return False
-            
-            is_valid, should_disable = self.db.verify_recovery_code(master_key, code)
-            
-            if is_valid:
-                print("[+] Recovery code accepted")
-                if should_disable:
-                    print("[!] Warning: No more recovery codes remaining")
-                    disable = prompt("Disable 2FA? [y/N]: ").strip().lower()
-                    if disable == 'y':
-                        self.db.disable_tfa(master_key)
-                        print("[+] 2FA disabled")
-                return True
-            else:
-                print("[-] Invalid recovery code")
-                return False
-        
-        else:
-            print("[-] Invalid option")
-            return False
-    
-    def setup_2fa(self):
-        """
-        Enable Two-Factor Authentication for the current vault.
-        
-        Returns:
-            bool: True if 2FA setup completed successfully
-        """
-        if not self._check_session():
-            return False
-        
-        # Ensure vault supports 2FA metadata
-        print("[+] Ensuring vault has 2FA metadata fields...")
-        if not self.db.add_tfa_fields_if_missing(self.master_key):
-            print("[-] Could not add 2FA fields to vault metadata")
-            return False
-        
-        # Check if 2FA is already enabled
-        tfa_settings = self.db.get_tfa_settings(self.master_key)
-        if tfa_settings and tfa_settings.get('enabled'):
-            print("[-] 2FA is already enabled")
-            disable = prompt("Disable 2FA? [y/N]: ").strip().lower()
-            if disable == 'y':
-                return self.disable_2fa()
-            return False
-        
-        # 2FA Setup Process
-        print("="*60)
-        print("Two-Factor Authentication Setup")
-        print("="*60)
-        
-        # Get vault name for username
-        vault_name = os.path.basename(self.db.db_path)
-        if vault_name.endswith('.eyr'):
-            vault_name = vault_name[:-4]
-        
-        try:
-            vault_info = self.db.get_vault_info(self.master_key)
-            if vault_info and 'name' in vault_info:
-                friendly_name = vault_info['name']
-            else:
-                friendly_name = vault_name
-        except:
-            friendly_name = vault_name
-        
-        # Use the complete setup method that includes file saving
-        try:
-            secret, recovery_codes, qr_code, saved_file = tfa.tfa_manager.setup_two_factor_auth(
-                friendly_name
-            )
-            
-            print(f"Secret: {secret}")
-            print(f"\nScan QR code with authenticator app:")
-            print("-" * 46)
-            
-            if qr_code:
-                print(qr_code)
-            else:
-                print("[-] Could not generate QR code. Please use manual setup.")
-                print(f"Manual entry:")
-                print(f"Secret: {secret}")
-                print(f"Account: {friendly_name}")
-                print(f"Issuer: Eyrie Password Manager")
-                print(f"Algorithm: SHA1")
-                print(f"Digits: 6")
-                print(f"Interval: 30 seconds")
-            
-            print("-" * 46)
-            
-            # Display recovery codes with security warning
-            print("\n" + "-"*60)
-            print("EMERGENCY RECOVERY CODES (SAVE THESE SECURELY):")
-            print("-"*60)
-            for i, code in enumerate(recovery_codes, 1):
-                print(f"  {i:2}. {code}")
-            
-            print(f"\n[i] IMPORTANT:")
-            print(f"1. Recovery codes saved to: {saved_file}")
-            print(f"2. Save this file in a secure location!")
-            print(f"3. You will need these if you lose access to your authenticator app.")
-            print(f"4. Each code can be used only once.")
-            print("-"*60)
-            
-        except Exception as e:
-            print(f"[-] 2FA setup error: {e}")
-            return False
-        
-        # Verify setup with a test code
-        print("To complete setup, enter a code from your authenticator app:")
-        
-        for attempt in range(3):
-            test_code = prompt(f"Verification code (attempt {attempt + 1}/3): ").strip()
-            
-            if tfa.tfa_manager.verify_totp_code(secret, test_code):
-                print("[+] TOTP code verified successfully!")
-                
-                # Enable 2FA in the vault
-                print("[+] Enabling 2FA in vault...")
-                if self.db.enable_tfa(self.master_key, secret, recovery_codes):
-                    print("[+] Two-Factor Authentication enabled successfully!")
-                    
-                    # Option to trust current device
-                    trust = prompt("\nTrust this device? (No 2FA required for 30 days) [Y/n]: ").strip().lower()
-                    if trust != 'n':
-                        self.db.update_trusted_device(self.master_key, self.device_id, add=True)
-                        print("[+] Device trusted for 30 days")
-                    
-                    print("\n[+] Setup complete! Your vault is now protected by 2FA.")
-                    return True
-                else:
-                    print("[-] Failed to enable 2FA in database")
-                    return False
-            
-            print("[-] Invalid code")
-        
-        print("[-] Too many failed attempts. 2FA setup cancelled.")
-        return False
-    
-    def disable_2fa(self):
-        """
-        Disable Two-Factor Authentication for the current vault.
-        
-        Returns:
-            bool: True if 2FA was successfully disabled
-        """
-        if not self._check_session():
-            return False
-        
-        # Security warning
-        print("!"*60)
-        print("WARNING: Disabling Two-Factor Authentication")
-        print("This will remove all 2FA protection from your vault.")
-        print("!"*60)
-        
-        # Require master password confirmation
-        master_password = prompt(
-            "Enter master password to confirm: ",
-            is_password=True
-        )
-
-        if master_password == "":
-            print("[-] Master password incorrect. Disabling cancelled.")
-            return False
-        
-        # Verify master password
-        temp_db = database.VaultDatabase(self.db.db_path)
-        temp_db.connect()
-        
-        try:
-            if not temp_db.eyr_file or not temp_db.eyr_file.load():
-                print("[-] Vault access error")
-                return False
-            
-            metadata = temp_db.eyr_file.metadata
-            if not metadata:
-                print("[-] Metadata retrieval failed")
-                return False
-            
-            salt_b64 = metadata.get('salt')
-            if not salt_b64:
-                print("[-] Cryptographic salt missing")
-                return False
-            
-            salt = base64.b64decode(salt_b64)
-            verification_key, _ = crypto.derive_master_key(master_password, salt)
-            
-            if verification_key != self.master_key:
-                print("[-] Master password incorrect. Disabling cancelled.")
-                crypto.secure_erase(master_password)
-                crypto.secure_erase_key(verification_key)
-                return False
-            
-            temp_db.close()
-            
-        except Exception as e:
-            print(f"[-] Verification error: {e}")
-            crypto.secure_erase(master_password)
-            if 'temp_db' in locals():
-                temp_db.close()
-            return False
-        
-        # Securely clear verification data
-        crypto.secure_erase(master_password)
-        crypto.secure_erase_key(verification_key)
-        
-        # Final confirmation
-        confirmation = prompt(
-            "Are you sure you want to disable 2FA? [y/N]: "
-        ).strip().lower()
-        
-        if confirmation != 'y':
-            print("[-] 2FA disable cancelled")
-            return False
-        
-        # Disable 2FA in database
-        if self.db.disable_tfa(self.master_key):
-            print("[+] Two-Factor Authentication disabled")
-            print("[!] Your vault is no longer protected by 2FA")
-            return True
-        else:
-            print("[-] Failed to disable 2FA")
-            return False
-    
-    def show_2fa_status(self):
-        """Display current 2FA configuration and status."""
-        if not self._check_session():
-            return
-        
-        tfa_settings = self.db.get_tfa_settings(self.master_key)
-        
-        if not tfa_settings:
-            print("[-] Could not retrieve 2FA settings")
-            return
-        
-        # Display 2FA status report
-        print("="*60)
-        print("Two-Factor Authentication Status")
-        print("="*60)
-        
-        enabled = tfa_settings.get('enabled', False)
-        status_icon = "✓" if enabled else "✗"
-        print(f"Status: {status_icon} {'ENABLED' if enabled else 'DISABLED'}")
-        
-        if enabled:
-            # Last used timestamp
-            last_used = tfa_settings.get('last_used')
-            if last_used:
-                try:
-                    last_used_str = datetime.fromtimestamp(last_used).strftime("%Y-%m-d %H:%M:%S")
-                    print(f"Last used: {last_used_str}")
-                except:
-                    pass
-            
-            # Trusted devices information
-            trusted_devices = tfa_settings.get('trusted_devices', [])
-            is_trusted = tfa.tfa_manager.is_trusted_device(self.device_id, trusted_devices)
-            print(f"This device: {'Trusted' if is_trusted else 'Not trusted'}")
-            
-            print(f"\nTrusted devices: {len(trusted_devices)}")
-            if trusted_devices:
-                current_time = time.time()
-                for device in trusted_devices[:5]:
-                    device_id = device.get('device_id', 'Unknown')
-                    expires = device.get('expires', 0)
-                    days_left = max(0, int((expires - current_time) / 86400))
-                    is_current = device_id == self.device_id
-                    device_marker = " (Current)" if is_current else ""
-                    print(f"  • {device_id[:8]}...{device_marker}")
-                    print(f"    Expires in: {days_left} days")
-                
-                if len(trusted_devices) > 5:
-                    print(f"  ... and {len(trusted_devices) - 5} more")
-            
-            # Recovery codes status
-            recovery_codes = tfa_settings.get('recovery_codes', [])
-            unused_codes = [c for c in recovery_codes if not c.get('used', False)]
-            
-            print(f"\nRecovery codes:")
-            print(f"  Unused: {len(unused_codes)}")
-            print(f"  Used: {len(recovery_codes) - len(unused_codes)}")
-            
-            if unused_codes:
-                print("\nUnused recovery codes:")
-                for i, code_info in enumerate(unused_codes, 1):
-                    code = code_info.get('code', 'Unknown')
-                    print(f"  {i:2}. {code}")
-                
-                if len(unused_codes) < 3:
-                    print(f"\n[!] WARNING: Only {len(unused_codes)} recovery codes remaining!")
-                    print("    Generate new codes or disable 2FA if you lose your authenticator.")
-            else:
-                print("\n[!] WARNING: No recovery codes remaining!")
-                print("    If you lose your authenticator, you will be locked out.")
-                print("    Consider disabling 2FA or setting it up again.")
-        else:
-            print("[-] 2FA is not enabled for this vault.")
-            print("Use 'setup_2fa' to enable Two-Factor Authentication.")
-        
-        print("="*60)
-    
-    # ==========================================================================
-    # CREDENTIAL MANAGEMENT
-    # ==========================================================================
-    
-    def add_entry(self):
+    def add_entry(self, title=None, username=None, password=None, url=None, category=None, generate_password=False, password_length=16):
         """
         Add a new credential entry to the vault.
         
+        Args:
+            title (str, optional): Service/application name
+            username (str, optional): Username/email
+            password (str, optional): Password (if not provided, will prompt or generate)
+            url (str, optional): URL
+            category (str, optional): Category (default: "General")
+            generate_password (bool): Whether to generate password
+            password_length (int): Length for generated password
+            
         Returns:
             bool: True if entry was successfully added
         """
         if not self._check_session():
             return False
         
-        # Collect entry data from user with validation loops
-        while True:
-            title = prompt("Service/Application: ").strip()
-            if not title:
-                print("[-] Title required")
-                continue
-            break
+        entry_data = {}
         
-        while True:
-            username = prompt("Username/Email: ").strip()
-            if not username:
-                print("[-] Username required")
-                continue
-            break
-        
-        url = prompt("URL (optional): ").strip()
-        
-        category = prompt("Category [General]: ").strip() or "General"
-        
-        entry_data = {
-            'title': title,
-            'username': username,
-            'url': url,
-            'category': category
-        }
-        
-        # Password generation/entry options
-        print("Password generation options:")
-        print("  1. Manual password entry")
-        print("  2. Generate secure password")
-        choice = prompt("Selection [1/2]: ").strip()
-        
-        if choice == "2":
-            # Generate secure password
+        # Interactive mode - collect data from user
+        if title is None and username is None and password is None and url is None and category is None:
+            # Fully interactive mode - prompt for everything
             while True:
-                length_input = prompt("Password length [16]: ").strip()
-                length = int(length_input) if length_input.isdigit() else 16
-                
-                if length < 8:
-                    print("[-] Minimum password length is 8 characters")
+                title = prompt("Service/Application: ").strip()
+                if not title:
+                    print("[-] Title required")
                     continue
                 break
+            entry_data['title'] = title
             
-            try:
-                entry_data['password'] = password_generator.generate_secure_password(length)
-                
-                # Display password partially masked by default
-                # Show first 3 characters and last 3 characters, mask the middle
-                if len(entry_data['password']) <= 6:
-                    # If password is too short, show as fully masked
-                    masked_display = '*' * length
-                    print(f"[+] Generated password: {masked_display}")
-                else:
-                    # Show first 3 chars, asterisks for middle, last 3 chars
-                    first_part = entry_data['password'][:3]
-                    last_part = entry_data['password'][-3:]
-                    masked_middle = '*' * (len(entry_data['password']) - 6)
-                    masked_display = f"{first_part}{masked_middle}{last_part}"
-                    print(f"[+] Generated password: {masked_display}")
-                
-                if ui.copy_to_clipboard(entry_data['password']):
-                    print("[+] Password automatically copied to clipboard (30 second retention)")
-            except password_generator.PasswordGenerationError as e:
-                print(f"[-] {e}")
-                return False
-        else:
-            # Manual password entry with validation
             while True:
-                password = prompt("Password: ", is_password=True)
-                if not password:
-                    print("[-] Password cannot be empty")
+                username = prompt("Username/Email: ").strip()
+                if not username:
+                    print("[-] Username required")
                     continue
-                
-                # Check password strength
-                is_valid, message = validation.validate_password_strength(password)
-                if not is_valid:
-                    print(f"[-] Weak password: {message}")
-                    print("[i] Use option 2 to generate a strong password")
-                    use_weak = prompt("Use weak password anyway? [y/N]: ").strip().lower()
-                    if use_weak != 'y':
-                        continue
-                
-                entry_data['password'] = password
-                # Don't show the manually entered password at all for security
-                print("[+] Password entered and saved securely")
-                if ui.copy_to_clipboard(entry_data['password']):
-                    print("[+] Password automatically copied to clipboard (30 second retention)")
                 break
-
+            entry_data['username'] = username
+            
+            url = prompt("URL (optional): ").strip()
+            if url:
+                entry_data['url'] = url
+            
+            category = prompt("Category [General]: ").strip() or "General"
+            entry_data['category'] = category
+            
+            # Password handling
+            if not generate_password:
+                # Interactive password selection
+                print("Password generation options:")
+                print("  1. Manual password entry")
+                print("  2. Generate secure password")
+                choice = prompt("Selection [1/2]: ").strip()
+                
+                if choice == "2":
+                    generate_password = True
+            
+            if generate_password:
+                # Generate secure password
+                if password_length is None:
+                    while True:
+                        length_input = prompt("Password length [16]: ").strip()
+                        length = int(length_input) if length_input.isdigit() else 16
+                        
+                        if length < 8:
+                            print("[-] Minimum password length is 8 characters")
+                            continue
+                        password_length = length
+                        break
+                
+                try:
+                    password = password_generator.generate_secure_password(password_length)
+                    entry_data['password'] = password
+                    
+                    # Display password partially masked by default
+                    masked_display = self._mask_password_partial(password)
+                    print(f"[+] Generated password: {masked_display}")
+                    
+                    if ui.copy_to_clipboard(password):
+                        print("[+] Password automatically copied to clipboard (30 second retention)")
+                except password_generator.PasswordGenerationError as e:
+                    print(f"[-] {e}")
+                    return False
+            else:
+                # Manual password entry with validation
+                while True:
+                    password = prompt("Password: ", is_password=True)
+                    if not password:
+                        print("[-] Password cannot be empty")
+                        continue
+                    
+                    # Check password strength
+                    is_valid, message = validation.validate_password_strength(password)
+                    if not is_valid:
+                        print(f"[-] Weak password: {message}")
+                        print("[i] Use option 2 to generate a strong password")
+                        use_weak = prompt("Use weak password anyway? [y/N]: ").strip().lower()
+                        if use_weak != 'y':
+                            continue
+                    
+                    entry_data['password'] = password
+                    print("[+] Password entered and saved securely")
+                    if ui.copy_to_clipboard(password):
+                        print("[+] Password automatically copied to clipboard (30 second retention)")
+                    break
+        else:
+            # Parameter mode - only set what's provided
+            if title is not None:
+                entry_data['title'] = title
+            if username is not None:
+                entry_data['username'] = username
+            if password is not None:
+                entry_data['password'] = password
+            if url is not None:
+                entry_data['url'] = url
+            if category is not None:
+                entry_data['category'] = category
+            
+            # Handle missing required fields
+            if 'title' not in entry_data:
+                print("[-] Title is required")
+                return False
+            if 'username' not in entry_data:
+                print("[-] Username is required")
+                return False
+            if 'password' not in entry_data:
+                # Handle password if not provided but generate_password is True
+                if generate_password:
+                    try:
+                        password = password_generator.generate_secure_password(password_length)
+                        entry_data['password'] = password
+                        
+                        masked_display = self._mask_password_partial(password)
+                        print(f"[+] Generated password: {masked_display}")
+                        
+                        if ui.copy_to_clipboard(password):
+                            print("[+] Password automatically copied to clipboard (30 second retention)")
+                    except password_generator.PasswordGenerationError as e:
+                        print(f"[-] {e}")
+                        return False
+                else:
+                    print("[-] Password is required")
+                    return False
+        
         # Validate entry data
         is_valid, message = validation.validate_entry_data(entry_data)
         if not is_valid:
@@ -873,19 +570,16 @@ class Eyrie:
         Retrieve and display a credential entry.
         
         Args:
-            entry_id (int, optional): Entry ID to retrieve
+            entry_id (str, optional): Entry ID to retrieve
             show_password (bool): Whether to display the password
         """
         if not self._check_session():
             return
         
         if entry_id is None:
-            entry_id = prompt("Entry ID: ", validator=NumberValidator()).strip()
-            if not entry_id.isdigit():
-                print("[-] Invalid entry identifier")
-                return
+            entry_id = prompt("Entry ID: ", validator=EYRIDValidator()).strip()
         
-        entry = self.db.get_entry(self.master_key, int(entry_id))
+        entry = self.db.get_entry(self.master_key, entry_id)
         
         if entry:
             # Format timestamps for display
@@ -913,12 +607,23 @@ class Eyrie:
         else:
             print("[-] Entry not found")
     
-    def list_entries(self):
-        """Display all credential entries, optionally filtered by category."""
+    def list_entries(self, category=None):
+        """
+        Display all credential entries, optionally filtered by category.
+        
+        Args:
+            category (str, optional): Category to filter by
+        """
         if not self._check_session():
             return
         
-        category = prompt("Filter by category (leave empty for all): ").strip()
+        # Handle 'all' category
+        if category and category.lower() == 'all':
+            category = None
+        
+        # Handle 'all' category from prompt
+        if category and category.lower() == 'all':
+            category = None
         
         if category:
             # Use the flexible category matching
@@ -973,10 +678,20 @@ class Eyrie:
         else:
             print("[-] No entries found")
     
-    def update_entry(self):
+    def update_entry(self, entry_id=None, title=None, username=None, password=None, url=None, category=None, generate_password=False, password_length=16):
         """
         Update an existing credential entry.
         
+        Args:
+            entry_id (str, optional): Entry ID to update
+            title (str, optional): New service/application name
+            username (str, optional): New username/email
+            password (str, optional): New password (empty to keep current)
+            url (str, optional): New URL
+            category (str, optional): New category
+            generate_password (bool): Whether to generate new password
+            password_length (int): Length for generated password
+            
         Returns:
             bool: True if entry was successfully updated
         """
@@ -984,93 +699,125 @@ class Eyrie:
             return False
         
         # Get entry ID to update
-        entry_id = prompt("Entry ID to update: ", validator=NumberValidator()).strip()
-        if not entry_id.isdigit():
-            print("[-] Invalid entry identifier")
+        if entry_id is None:
+            entry_id = prompt("Entry ID to update: ", validator=EYRIDValidator()).strip()
+        
+        if not entry_id:
+            print("[-] Entry ID required")
             return False
         
         # Retrieve current entry
-        current_entry = self.db.get_entry(self.master_key, int(entry_id), formatted=False)
+        current_entry = self.db.get_entry(self.master_key, entry_id, formatted=False)
         if not current_entry:
             print("[-] Entry not found")
             return False
         
-        print("[i] Leave field blank to preserve current value")
+        updated_data = {}
         
-        # Collect updated data with current values as defaults
-        updated_data = {
-            'title': prompt(f"Service name [{current_entry['title']}]: ").strip() or current_entry['title'],
-            'username': prompt(f"Username [{current_entry['username']}]: ").strip() or current_entry['username'],
-            'url': prompt(f"URL [{current_entry.get('url', '')}]: ").strip() or current_entry.get('url', ''),
-            'category': prompt(f"Category [{current_entry.get('category', 'General')}]: ").strip() or current_entry.get('category', 'General')
-        }
-        
-        # Password update logic
-        pwd_update = prompt("Update password? [y/N]: ").strip().lower()
-        if pwd_update == 'y':
-            generate_new = prompt("Generate new password? [y/N]: ").strip().lower()
-            if generate_new == 'y':
-                # Generate new secure password
-                while True:
-                    length_input = prompt("Password length [16]: ").strip()
-                    length = int(length_input) if length_input.isdigit() else 16
+        # Interactive mode
+        if title is None and username is None and password is None and url is None and category is None:
+            print("[i] Leave field blank to preserve current value")
+            
+            # Collect updated data with current values as defaults
+            updated_data = {
+                'title': prompt(f"Service name [{current_entry['title']}]: ").strip() or current_entry['title'],
+                'username': prompt(f"Username [{current_entry['username']}]: ").strip() or current_entry['username'],
+                'url': prompt(f"URL [{current_entry.get('url', '')}]: ").strip() or current_entry.get('url', ''),
+                'category': prompt(f"Category [{current_entry.get('category', 'General')}]: ").strip() or current_entry.get('category', 'General')
+            }
+            
+            # Password update logic
+            pwd_update = prompt("Update password? [y/N]: ").strip().lower()
+            if pwd_update == 'y':
+                generate_new = prompt("Generate new password? [y/N]: ").strip().lower()
+                if generate_new == 'y':
+                    # Generate new secure password
+                    if password_length is None:
+                        while True:
+                            length_input = prompt("Password length [16]: ").strip()
+                            length = int(length_input) if length_input.isdigit() else 16
+                            
+                            if length < 8:
+                                print("[-] Minimum password length is 8 characters")
+                                continue
+                            password_length = length
+                            break
                     
-                    if length < 8:
-                        print("[-] Minimum password length is 8 characters")
-                        continue
-                    break
-                
-                try:
-                    new_password = password_generator.generate_secure_password(length)
+                    try:
+                        new_password = password_generator.generate_secure_password(password_length)
+                        
+                        # Check password reuse
+                        history = self.db.get_password_history(self.master_key, entry_id)
+                        if history:
+                            current_entry_full = self.db.get_entry(self.master_key, entry_id, formatted=False)
+                            if current_entry_full and 'password_history' in current_entry_full:
+                                for item in current_entry_full['password_history']:
+                                    if item.get('password') == new_password:
+                                        masked_new = self._mask_password_partial(new_password)
+                                        print(f"[!] Warning: Password {masked_new} was previously used for this entry!")
+                                        reuse = prompt("Use it anyway? [y/N]: ").strip().lower()
+                                        if reuse != 'y':
+                                            print("[-] Password update cancelled")
+                                            return False
+                        
+                        updated_data['password'] = new_password
+                        masked_display = self._mask_password_partial(new_password)
+                        print(f"[+] New password: {masked_display}")
+                        if ui.copy_to_clipboard(new_password):
+                            print("[+] Password automatically copied to clipboard (30 second retention)")
+                    except password_generator.PasswordGenerationError as e:
+                        print(f"[-] {e}")
+                        return False
+                else:
+                    # Manual password entry with reuse check
+                    new_password = prompt(
+                        "New password: ",
+                        is_password=True
+                    )
                     
-                    # Check password reuse
-                    history = self.db.get_password_history(self.master_key, int(entry_id))
-                    if history:
-                        current_entry_full = self.db.get_entry(self.master_key, int(entry_id), formatted=False)
-                        if current_entry_full and 'password_history' in current_entry_full:
-                            for item in current_entry_full['password_history']:
-                                if item.get('password') == new_password:
-                                    masked_new = self._mask_password_partial(new_password)
-                                    print(f"[!] Warning: Password {masked_new} was previously used for this entry!")
-                                    reuse = prompt("Use it anyway? [y/N]: ").strip().lower()
-                                    if reuse != 'y':
-                                        print("[-] Password update cancelled")
-                                        return False
+                    if not new_password:
+                        print("[-] Password cannot be empty")
+                        return False
+                    
+                    current_entry_full = self.db.get_entry(self.master_key, entry_id, formatted=False)
+                    if current_entry_full and 'password_history' in current_entry_full:
+                        for item in current_entry_full['password_history']:
+                            if item.get('password') == new_password:
+                                masked_new = self._mask_password_partial(new_password)
+                                print(f"[!] Warning: Password {masked_new} was previously used for this entry!")
+                                reuse = prompt("Use it anyway? [y/N]: ").strip().lower()
+                                if reuse != 'y':
+                                    print("[-] Password update cancelled")
+                                    return False
                     
                     updated_data['password'] = new_password
-                    print(f"[+] New password: {updated_data['password']}")
-                    if ui.copy_to_clipboard(updated_data['password']):
+                    if ui.copy_to_clipboard(new_password):
                         print("[+] Password automatically copied to clipboard (30 second retention)")
+            else:
+                updated_data['password'] = current_entry.get('password', '')
+        else:
+            # Parameter mode - only update provided fields
+            updated_data = {
+                'title': title if title is not None else current_entry['title'],
+                'username': username if username is not None else current_entry['username'],
+                'url': url if url is not None else current_entry.get('url', ''),
+                'category': category if category is not None else current_entry.get('category', 'General')
+            }
+            
+            # Handle password update
+            if password is not None:
+                updated_data['password'] = password
+            elif generate_password:
+                try:
+                    if password_length is None:
+                        password_length = 16
+                    new_password = password_generator.generate_secure_password(password_length)
+                    updated_data['password'] = new_password
                 except password_generator.PasswordGenerationError as e:
                     print(f"[-] {e}")
                     return False
             else:
-                # Manual password entry with reuse check
-                new_password = prompt(
-                    "New password: ",
-                    is_password=True
-                )
-                
-                if not new_password:
-                    print("[-] Password cannot be empty")
-                    return False
-                
-                current_entry_full = self.db.get_entry(self.master_key, int(entry_id), formatted=False)
-                if current_entry_full and 'password_history' in current_entry_full:
-                    for item in current_entry_full['password_history']:
-                        if item.get('password') == new_password:
-                            masked_new = self._mask_password_partial(new_password)
-                            print(f"[!] Warning: Password {masked_new} was previously used for this entry!")
-                            reuse = prompt("Use it anyway? [y/N]: ").strip().lower()
-                            if reuse != 'y':
-                                print("[-] Password update cancelled")
-                                return False
-                
-                updated_data['password'] = new_password
-                if ui.copy_to_clipboard(updated_data['password']):
-                    print("[+] Password automatically copied to clipboard (30 second retention)")
-        else:
-            updated_data['password'] = current_entry.get('password', '')
+                updated_data['password'] = current_entry.get('password', '')
         
         # Validate and apply update
         is_valid, message = validation.validate_entry_data(updated_data)
@@ -1078,31 +825,411 @@ class Eyrie:
             print(f"[-] {message}")
             return False
         
-        if self.db.update_entry(self.master_key, int(entry_id), updated_data):
+        if self.db.update_entry(self.master_key, entry_id, updated_data):
             print(f"[+] Entry {entry_id} successfully updated")
             crypto.secure_erase(updated_data.get('password', ''))
             crypto.secure_erase(current_entry.get('password', ''))
             return True
         
         return False
+
+    # ==========================================================================
+    # SECURE NOTES MANAGEMENT - INTERACTIVE
+    # ==========================================================================
+
+    def add_note(self, title=None, category=None, content=None):
+        """
+        Add a new secure note to the vault.
+
+        Args:
+            title (str, optional): Note title
+            category (str, optional): Note category
+            content (str, optional): Note content
+            
+        Returns:
+            bool: True if note was successfully added
+        """
+        if not self._check_session():
+            return False
+    
+        try:
+            if title is None and category is None and content is None:
+                # Use the notes module to create note from interactive input
+                note_data = notes.create_note_from_input()
+                if not note_data:
+                    print("[-] Note creation cancelled")
+                    return False
+            else:
+                # Parameter mode
+                if title is None:
+                    title = prompt("Note title: ").strip()
+                    if not title:
+                        print("[-] Title required")
+                        return False
+                
+                if category is None:
+                    category = prompt("Category [Notes]: ").strip() or "Notes"
+                
+                if content is None:
+                    content = prompt("Note content (multi-line, end with Ctrl+D): ", multiline=True).strip()
+                    if not content:
+                        print("[-] Content required")
+                        return False
+                
+                note_data = {
+                    'title': title,
+                    'category': category,
+                    'content': content
+                }
+        
+            # Store note in database
+            entry_id = self.db.add_note(self.master_key, note_data)
+        
+            if entry_id:
+                print(f"[+] Note successfully created (ID: {entry_id})")
+                return True
+        
+            return False
+        
+        except Exception as e:
+            print(f"[-] Error adding note: {e}")
+            return False
+
+    def list_notes(self, category=None):
+        """
+        Display all notes, optionally filtered by category.
+        
+        Args:
+            category (str, optional): Category to filter by
+        """
+        if not self._check_session():
+            return
+    
+        # Handle 'all' category
+        if category and category.lower() == 'all':
+            category = None
+    
+        # Handle 'all' category from prompt
+        if category and category.lower() == 'all':
+            category = None
+    
+        if category:
+            # Use the flexible category matching
+            notes_list = self.db.get_notes_by_category(self.master_key, category)
+            if notes_list:
+                # Find the actual category name used in the matched notes
+                actual_category = notes_list[0].get('category', category.title())
+                print(f"[+] Notes in Category: '{actual_category}' (matched '{category}')")
+            else:
+                print(f"[-] No notes found matching category: '{category}'")
+            
+                # Show suggestions for similar categories
+                suggestions = self.db.get_category_suggestions(self.master_key, category)
+                if suggestions:
+                    print(f"[i] Similar categories found: {', '.join(suggestions[:5])}")
+                    if len(suggestions) > 5:
+                        print(f"    ... and {len(suggestions) - 5} more")
+                return
+        else:
+            notes_list = self.db.list_notes(self.master_key)
+            print(f"[+] All Notes")
+    
+        if notes_list:
+            notes.display_notes_table(notes_list)
+        else:
+            print("[-] No notes found")
+
+    def get_note(self, entry_id=None):
+        """
+        Retrieve and display a secure note.
+    
+        Args:
+            entry_id (str, optional): Entry ID to retrieve
+        """
+        if not self._check_session():
+            return
+    
+        if entry_id is None:
+            entry_id = prompt("Note ID: ", validator=EYRIDValidator()).strip()
+            if not entry_id:
+                print("[-] Note ID required")
+                return
+    
+        note = self.db.get_note(self.master_key, entry_id)
+    
+        if note:
+            # Format timestamps for display
+            created_at = note.get('created_at')
+            updated_at = note.get('updated_at')
+        
+            if created_at and isinstance(created_at, (int, float)):
+                try:
+                    note['created_at'] = datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
+                except (ValueError, TypeError, OSError):
+                    pass
+        
+            if updated_at and isinstance(updated_at, (int, float)):
+                try:
+                    note['updated_at'] = datetime.fromtimestamp(updated_at).strftime("%Y-%m-%d %H:%M:%S")
+                except (ValueError, TypeError, OSError):
+                    pass
+        
+            # Display note and offer to copy content
+            notes.display_note_entry(note, show_content=True)
+        else:
+            print("[-] Note not found or invalid note ID")
+
+    def search_notes(self, search_term=None):
+        """
+        Search notes by title, content, or category.
+        
+        Args:
+            search_term (str, optional): Search term
+        """
+        if not self._check_session():
+            return
+    
+        if search_term is None:
+            search_term = prompt("Search term: ").strip()
+        
+        if not search_term:
+            print("[-] Search term required")
+            return
+    
+        results = self.db.search_notes(self.master_key, search_term)
+    
+        if results:
+            print(f"[+] Found {len(results)} note(s) matching '{search_term}':")
+            print("-" * 60)
+        
+            for i, note in enumerate(results, 1):
+                title = note.get('title', 'Untitled')
+                category = note.get('category', 'Notes')
+                created = note.get('created_at', '')
+            
+                print(f"{i:2}. ID: {note.get('id', 'N/A')}")
+                print(f"    Title: {title}")
+                print(f"    Category: {category}")
+                print(f"    Created: {created}")
+                print()
+        
+            # Option to view a specific note
+            view_choice = prompt("Enter number to view note, or press Enter to continue: ").strip()
+            if view_choice.isdigit():
+                idx = int(view_choice) - 1
+                if 0 <= idx < len(results):
+                    note_id = results[idx].get('id')
+                    if note_id:
+                        self.get_note(note_id)
+        else:
+            print(f"[-] No notes found matching '{search_term}'")
+
+    def update_note(self, entry_id=None, title=None, category=None, content=None):
+        """
+        Update an existing secure note.
+    
+        Args:
+            entry_id (str, optional): Note ID to update
+            title (str, optional): New title
+            category (str, optional): New category
+            content (str, optional): New content
+            
+        Returns:
+            bool: True if note was successfully updated
+        """
+        if not self._check_session():
+            return False
+    
+        # Get note ID to update
+        if entry_id is None:
+            entry_id = prompt("Note ID to update: ", validator=EYRIDValidator()).strip()
+        
+        if not entry_id:
+            print("[-] Note ID required")
+            return False
+    
+        # Retrieve current note
+        current_note = self.db.get_note(self.master_key, entry_id, formatted=False)
+        if not current_note:
+            print("[-] Note not found")
+            return False
+    
+        updated_data = {}
+        
+        # Interactive mode
+        if title is None and category is None and content is None:
+            print("[i] Leave field blank to preserve current value")
+            print("[i] Type 'SAME' to keep current content")
+        
+            # Collect updated data with current values as defaults
+            updated_data = {
+                'title': prompt(f"Note title [{current_note['title']}]: ").strip() or current_note['title'],
+                'category': prompt(f"Category [{current_note.get('category', 'Notes')}]: ").strip() or current_note.get('category', 'Notes')
+            }
+        
+            # Content update
+            content_update = prompt("Update content? [y/N]: ").strip().lower()
+            if content_update == 'y':
+                # Use the notes module to edit content
+                current_content = current_note.get('content', '')
+                new_content = notes.edit_note_content(current_content)
+                if new_content is None:
+                    print("[-] Content update cancelled")
+                    return False
+                updated_data['content'] = new_content
+            else:
+                updated_data['content'] = current_note.get('content', '')
+        else:
+            # Parameter mode - only update provided fields
+            updated_data = {
+                'title': title if title is not None else current_note['title'],
+                'category': category if category is not None else current_note.get('category', 'Notes'),
+                'content': content if content is not None else current_note.get('content', '')
+            }
+    
+        # Validate and apply update
+        if not updated_data.get('title'):
+            print("[-] Title cannot be empty")
+            return False
+    
+        if not updated_data.get('content'):
+            print("[-] Content cannot be empty")
+            return False
+    
+        # Check content size
+        content_size = len(updated_data['content'].encode('utf-8'))
+        max_size = 10 * 1024  # 10KB
+        if content_size > max_size:
+            print(f"[-] Note content exceeds {max_size/1024:.0f}KB limit")
+            return False
+    
+        if self.db.update_note(self.master_key, entry_id, updated_data):
+            print(f"[+] Note {entry_id} successfully updated")
+            return True
+    
+        return False
+
+    def delete_note(self, entry_id=None):
+        """
+        Permanently delete a secure note.
+    
+        Args:
+            entry_id (str, optional): Note ID to delete
+            
+        Returns:
+            bool: True if note was successfully deleted
+        """
+        if not self._check_session():
+            return False
+    
+        if entry_id is None:
+            entry_id = prompt("Note ID to delete: ", validator=EYRIDValidator()).strip()
+        
+        if not entry_id:
+            print("[-] Note ID required")
+            return False
+    
+        note = self.db.get_note(self.master_key, entry_id)
+        if not note:
+            print(f"[-] Note {entry_id} not found")
+            return False
+    
+        print(f"[i] Note to delete: {note.get('title', 'Untitled')}")
+        print(f"Category: {note.get('category', 'Notes')}")
+    
+        # Require master password confirmation
+        master_password = prompt(
+            "Enter master password to confirm deletion: ",
+            is_password=True
+        )
+    
+        if master_password == "":
+            print("[-] Master password incorrect. Deletion cancelled.")
+            return False
+
+        temp_db = database.VaultDatabase(self.db.db_path)
+        temp_db.connect()
+    
+        try:
+            if not temp_db.eyr_file or not temp_db.eyr_file.load():
+                print("[-] Vault access error")
+                temp_db.close()
+                return False
+        
+            metadata = temp_db.eyr_file.metadata
+            if not metadata:
+                print("[-] Metadata retrieval failed")
+                temp_db.close()
+                return False
+        
+            salt_b64 = metadata.get('salt')
+            if not salt_b64:
+                print("[-] Cryptographic salt missing")
+                temp_db.close()
+                return False
+        
+            salt = base64.b64decode(salt_b64)
+            verification_key, _ = crypto.derive_master_key(master_password, salt)
+        
+            if verification_key != self.master_key:
+                print("[-] Master password incorrect. Deletion cancelled.")
+                crypto.secure_erase(master_password)
+                crypto.secure_erase_key(verification_key)
+                temp_db.close()
+                return False
+        
+            temp_db.close()
+        
+        except Exception as e:
+            print(f"[-] Verification error: {e}")
+            crypto.secure_erase(master_password)
+            if 'temp_db' in locals():
+                temp_db.close()
+            return False
+    
+        crypto.secure_erase(master_password)
+        if 'verification_key' in locals():
+            crypto.secure_erase_key(verification_key)
+    
+        # Final confirmation
+        confirmation = prompt(
+            f"[!] This action cannot be undone!\n"
+            f"Confirm deletion of note {entry_id}? [y/N]: "
+        ).strip().lower()
+    
+        if confirmation != 'y':
+            print("Deletion cancelled")
+            return False
+    
+        if self.db.delete_note(entry_id):
+            print(f"[+] Note {entry_id} successfully deleted")
+            return True
+    
+        print("[-] Note deletion failed")
+        return False
     
     # ==========================================================================
     # PASSWORD HISTORY MANAGEMENT
     # ==========================================================================
     
-    def password_history(self):
-        """Display password change history for a specific entry."""
+    def password_history(self, entry_id=None):
+        """
+        Display password change history for a specific entry.
+        
+        Args:
+            entry_id (str, optional): Entry ID
+        """
         if not self._check_session():
             return
         
-        entry_id = prompt("Entry ID: ", validator=NumberValidator()).strip()
-        if not entry_id.isdigit():
-            print("[-] Invalid entry identifier")
+        if entry_id is None:
+            entry_id = prompt("Entry ID: ", validator=EYRIDValidator()).strip()
+        
+        if not entry_id:
+            print("[-] Entry ID required")
             return
         
-        entry_id_int = int(entry_id)
-        
-        entry = self.db.get_entry(self.master_key, entry_id_int)
+        entry = self.db.get_entry(self.master_key, entry_id)
         if not entry:
             print(f"[-] Entry {entry_id} not found")
             return
@@ -1112,7 +1239,7 @@ class Eyrie:
         print(f"    Current password: {'*' * len(entry.get('password', ''))}")
         print("=" * 60)
         
-        history = self.db.get_password_history(self.master_key, entry_id_int)
+        history = self.db.get_password_history(self.master_key, entry_id)
         
         if not history or len(history) == 0:
             print("[-] No password history found for this entry")
@@ -1138,25 +1265,29 @@ class Eyrie:
         print("[i] Note: Passwords are partially masked for security")
         print("[!] Do not reuse old passwords for security reasons.")
     
-    def reveal_version(self):
+    def reveal_version(self, entry_id=None, version=None):
         """
         Reveal a specific password from history (requires master password).
         
+        Args:
+            entry_id (str, optional): Entry ID
+            version (int, optional): Version number
+            
         Returns:
             bool: True if password was successfully revealed
         """
         if not self._check_session():
             return False
         
-        entry_id = prompt("Entry ID: ", validator=NumberValidator()).strip()
-        if not entry_id.isdigit():
-            print("[-] Invalid entry identifier")
+        if entry_id is None:
+            entry_id = prompt("Entry ID: ", validator=EYRIDValidator()).strip()
+        
+        if not entry_id:
+            print("[-] Entry ID required")
             return False
         
-        entry_id_int = int(entry_id)
-        
         # Retrieve entry details
-        entry = self.db.get_entry(self.master_key, entry_id_int)
+        entry = self.db.get_entry(self.master_key, entry_id)
         if not entry:
             print(f"[-] Entry {entry_id} not found")
             return False
@@ -1165,7 +1296,7 @@ class Eyrie:
         print(f"     Username: {entry.get('username', 'N/A')}")
         
         # Get password history with actual passwords
-        history = self.db.get_password_history_with_passwords(self.master_key, entry_id_int)
+        history = self.db.get_password_history_with_passwords(self.master_key, entry_id)
         if not history or len(history) == 0:
             print("[-] No password history found for this entry")
             return False
@@ -1175,23 +1306,27 @@ class Eyrie:
         print("-" * 60)
         
         for i, item in enumerate(history, 1):
-            version = item.get('version', i)
+            version_num = item.get('version', i)
             changed_at = item.get('changed_at_formatted', 'Unknown date')
             length = item.get('length', 0)
             is_current = item.get('is_current', False)
             
-            status = "[CURRENT]" if is_current else f"Version {version}"
+            status = "[CURRENT]" if is_current else f"Version {version_num}"
             print(f"  {i:2}. {status} - Changed: {changed_at} - Length: {length} chars")
         
         print("-" * 60)
         
         # Select version to reveal
-        version_input = prompt("Enter version number to reveal (or 0 to cancel): ").strip()
-        if not version_input.isdigit():
-            print("[-] Invalid version number")
-            return False
+        if version is None:
+            version_input = prompt("Enter version number to reveal (or 0 to cancel): ").strip()
+            if not version_input.isdigit():
+                print("[-] Invalid version number")
+                return False
+            
+            version_num = int(version_input)
+        else:
+            version_num = version
         
-        version_num = int(version_input)
         if version_num == 0:
             print("[-] Operation cancelled")
             return False
@@ -1291,24 +1426,27 @@ class Eyrie:
         
         return True
     
-    def clear_history(self):
+    def clear_history(self, entry_id=None):
         """
         Clear password history for a specific entry.
         
+        Args:
+            entry_id (str, optional): Entry ID
+            
         Returns:
             bool: True if history was successfully cleared
         """
         if not self._check_session():
             return False
         
-        entry_id = prompt("Entry ID: ", validator=NumberValidator()).strip()
-        if not entry_id.isdigit():
-            print("[-] Invalid entry identifier")
+        if entry_id is None:
+            entry_id = prompt("Entry ID: ", validator=EYRIDValidator()).strip()
+        
+        if not entry_id:
+            print("[-] Entry ID required")
             return False
         
-        entry_id_int = int(entry_id)
-        
-        entry = self.db.get_entry(self.master_key, entry_id_int)
+        entry = self.db.get_entry(self.master_key, entry_id)
         if not entry:
             print(f"[-] Entry {entry_id} not found")
             return False
@@ -1316,7 +1454,7 @@ class Eyrie:
         print(f"[i] Entry: {entry.get('title', 'Untitled')}")
         print(f"     Username: {entry.get('username', 'N/A')}")
         
-        history = self.db.get_password_history(self.master_key, entry_id_int)
+        history = self.db.get_password_history(self.master_key, entry_id)
         history_count = len(history) if history else 0
         
         print(f"[!] This will clear {history_count} password history entries.")
@@ -1388,7 +1526,7 @@ class Eyrie:
             print("[-] History clear cancelled")
             return False
         
-        if self.db.clear_password_history(self.master_key, entry_id_int):
+        if self.db.clear_password_history(self.master_key, entry_id):
             print(f"[+] Password history cleared for entry {entry_id}")
             return True
         
@@ -1399,24 +1537,27 @@ class Eyrie:
     # ENTRY DELETION
     # ==========================================================================
     
-    def delete_entry(self):
+    def delete_entry(self, entry_id=None):
         """
         Permanently delete a credential entry.
         
+        Args:
+            entry_id (str, optional): Entry ID to delete
+            
         Returns:
             bool: True if entry was successfully deleted
         """
         if not self._check_session():
             return False
         
-        entry_id = prompt("Entry ID to delete: ", validator=NumberValidator()).strip()
-        if not entry_id.isdigit():
-            print("[-] Invalid entry identifier")
+        if entry_id is None:
+            entry_id = prompt("Entry ID to delete: ", validator=EYRIDValidator()).strip()
+        
+        if not entry_id:
+            print("[-] Entry ID required")
             return False
         
-        entry_id_int = int(entry_id)
-        
-        entry = self.db.get_entry(self.master_key, entry_id_int)
+        entry = self.db.get_entry(self.master_key, entry_id)
         if not entry:
             print(f"[-] Entry {entry_id} not found")
             return False
@@ -1489,7 +1630,7 @@ class Eyrie:
             print("Deletion cancelled")
             return False
         
-        if self.db.delete_entry(entry_id_int):
+        if self.db.delete_entry(entry_id):
             print(f"[+] Entry {entry_id} successfully deleted")
             return True
         
@@ -1500,44 +1641,50 @@ class Eyrie:
     # PASSWORD GENERATION
     # ==========================================================================
     
-    def generate_password(self):
-        """Generate and display a secure random password."""
-        while True:
-            length_input = prompt("Password length [16]: ").strip()
-            length = int(length_input) if length_input.isdigit() else 16
+    def generate_password(self, length=None, reveal=False):
+        """
+        Generate and display a secure random password.
         
-            if length < 8:
-                print("[-] Minimum password length is 8 characters")
-                continue
-            break
+        Args:
+            length (int, optional): Password length
+            reveal (bool): Whether to show full password
+        """
+        if length is None:
+            while True:
+                length_input = prompt("Password length [16]: ").strip()
+                length = int(length_input) if length_input.isdigit() else 16
+            
+                if length < 8:
+                    print("[-] Minimum password length is 8 characters")
+                    continue
+                break
     
         try:
             password = password_generator.generate_secure_password(length)
         
-            # Display password partially masked by default
-            # Show first 3 characters and last 3 characters, mask the middle
-            if len(password) <= 6:
-                # If password is too short, show as fully masked
-                masked_display = '*' * length
-                print(f"Generated password: {masked_display}")
+            # Display password partially masked by default, or full if reveal is True
+            if reveal:
+                # Show full password if reveal flag is True
+                print(f"Generated password: {password}")
             else:
-                # Show first 3 chars, asterisks for middle, last 3 chars
-                first_part = password[:3]
-                last_part = password[-3:]
-                masked_middle = '*' * (len(password) - 6)
-                masked_display = f"{first_part}{masked_middle}{last_part}"
-                print(f"Generated password: {masked_display}")
+                # Show partially masked by default
+                if len(password) <= 6:
+                    # If password is too short, show as fully masked
+                    masked_display = '*' * length
+                    print(f"Generated password: {masked_display}")
+                else:
+                    # Show first 3 chars, asterisks for middle, last 3 chars
+                    first_part = password[:3]
+                    last_part = password[-3:]
+                    masked_middle = '*' * (len(password) - 6) if len(password) > 6 else ""
+                    masked_display = f"{first_part}{masked_middle}{last_part}"
+                    print(f"Generated password: {masked_display}")
         
             strength_info = password_generator.estimate_password_strength(password)
             print(f"Security assessment: {strength_info['strength']}")
         
             if ui.copy_to_clipboard(password):
                 print("[+] Password automatically copied to clipboard (30 second retention)")
-        
-            # Optional: Ask if user wants to see the full password
-            reveal = prompt("Reveal full password? [y/N]: ").strip().lower()
-            if reveal == 'y':
-                print(f"Full password: {password}")
             
         except password_generator.PasswordGenerationError as e:
             print(f"[-] {e}")
@@ -1954,18 +2101,35 @@ def main():
     """Main entry point for the Eyrie Password Manager."""
     # Command-line argument parser setup
     parser = argparse.ArgumentParser(
-        description="Eyrie is a comprehensive password management toolkit that allows secure storage, organization, and handling of sensitive credentials. It includes utilities for creating, editing, and displaying entries, validating passwords, emails, and URLs, performing secure backup and restore operations, exporting and importing data, and safely managing clipboard and authentication attempts.",
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        description="Eyrie is a comprehensive password management toolkit that allows secure storage, organization, and handling of sensitive credentials.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python3 eyrie.py init --vault myvault.eyr
+  python3 eyrie.py unlock --vault vault.eyr
+  python3 eyrie.py add-entry --help
+  python3 eyrie.py export --vault vault.eyr --backup-path backup.enc
+        """
     )
     subparsers = parser.add_subparsers(
         dest='command', 
-        help='Available operations'
+        help='Available operations',
+        metavar='COMMAND'
     )
     
     # Vault initialization command
     init_parser = subparsers.add_parser(
         'init', 
-        help='Initialize new encrypted Eyrie vault'
+        help='Initialize new encrypted Eyrie vault',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Initialize a new encrypted Eyrie vault.
+This command creates a new vault file and sets up the master password.
+        """,
+        epilog="""
+Example:
+  python3 eyrie.py init --vault myvault.eyr
+        """
     )
     init_parser.add_argument(
         '--vault', 
@@ -1976,16 +2140,485 @@ def main():
     # Vault unlock command
     unlock_parser = subparsers.add_parser(
         'unlock', 
-        help='Authenticate and unlock Eyrie vault for interactive management'
+        help='Authenticate and unlock Eyrie vault for interactive management',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Authenticate and unlock an existing Eyrie vault.
+This command starts an interactive session for managing your vault.
+        """,
+        epilog="""
+Examples:
+  python3 eyrie.py unlock --vault vault.eyr
+  python3 eyrie.py unlock --vault myvault.eyr --password your_master_password
+        """
     )
     unlock_parser.add_argument(
         '--vault', 
         default='vault.eyr', 
         help='Vault file path (default: vault.eyr)'
     )
+    unlock_parser.add_argument(
+        '--password',
+        help='Master password (if provided, no interactive prompt)'
+    )
+    
+    # Add entry command
+    add_entry_parser = subparsers.add_parser(
+        'add-entry',
+        help='Add new credential entry',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Add a new credential entry to the vault.
+This command allows you to store passwords for services, applications, or websites.
+        """,
+        epilog="""
+Examples:
+  python3 eyrie.py add-entry --vault vault.eyr --password masterpass --title "GitHub" --username user@example.com --category "Development"
+  python3 eyrie.py add-entry --vault vault.eyr --password masterpass --title "Gmail" --username user@gmail.com --generate --length 20
+        """
+    )
+    add_entry_parser.add_argument(
+        '--vault',
+        default='vault.eyr',
+        help='Vault file path (default: vault.eyr)'
+    )
+    add_entry_parser.add_argument(
+        '--password',
+        required=True,
+        help='Master password (required)'
+    )
+    add_entry_parser.add_argument(
+        '--title',
+        required=True,
+        help='Service/application name (required)'
+    )
+    add_entry_parser.add_argument(
+        '--username',
+        required=True,
+        help='Username/email (required)'
+    )
+    add_entry_parser.add_argument(
+        '--entry-password',
+        dest='entry_password',
+        help='Password for the entry (leave empty to generate or prompt)'
+    )
+    add_entry_parser.add_argument(
+        '--url',
+        help='URL (optional)'
+    )
+    add_entry_parser.add_argument(
+        '--category',
+        default='General',
+        help='Category (default: General)'
+    )
+    add_entry_parser.add_argument(
+        '--generate',
+        action='store_true',
+        help='Generate secure password'
+    )
+    add_entry_parser.add_argument(
+        '--length',
+        type=int,
+        default=16,
+        help='Password length when generating (default: 16)'
+    )
+    
+    # Get entry command
+    get_entry_parser = subparsers.add_parser(
+        'get-entry',
+        help='Retrieve and display credential entry',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Retrieve and display a credential entry from the vault.
+This command shows the details of a specific entry including the password.
+        """,
+        epilog="""
+Example:
+  python3 eyrie.py get-entry --vault vault.eyr --password masterpass --id EYR-ABC123
+        """
+    )
+    get_entry_parser.add_argument(
+        '--vault',
+        default='vault.eyr',
+        help='Vault file path (default: vault.eyr)'
+    )
+    get_entry_parser.add_argument(
+        '--password',
+        required=True,
+        help='Master password (required)'
+    )
+    get_entry_parser.add_argument(
+        '--id',
+        required=True,
+        help='Entry ID to retrieve (required)'
+    )
+    get_entry_parser.add_argument(
+        '--no-password',
+        action='store_true',
+        help='Do not show password'
+    )
+    
+    # List entries command
+    list_entries_parser = subparsers.add_parser(
+        'list-entries',
+        help='List all credential entries',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+List all credential entries in the vault.
+This command displays all stored entries, optionally filtered by category.
+        """,
+        epilog="""
+Examples:
+  python3 eyrie.py list-entries --vault vault.eyr --password masterpass
+  python3 eyrie.py list-entries --vault vault.eyr --password masterpass --category "Social Media"
+  python3 eyrie.py list-entries --vault vault.eyr --password masterpass --category all
+        """
+    )
+    list_entries_parser.add_argument(
+        '--vault',
+        default='vault.eyr',
+        help='Vault file path (default: vault.eyr)'
+    )
+    list_entries_parser.add_argument(
+        '--password',
+        required=True,
+        help='Master password (required)'
+    )
+    list_entries_parser.add_argument(
+        '--category',
+        help='Filter by category (use "all" to show all entries)'
+    )
+    
+    # Update entry command
+    update_entry_parser = subparsers.add_parser(
+        'update-entry',
+        help='Update existing credential entry',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Update an existing credential entry in the vault.
+This command allows you to modify any field of an existing entry.
+        """,
+        epilog="""
+Examples:
+  python3 eyrie.py update-entry --vault vault.eyr --password masterpass --id EYR-ABC123 --title "New Title"
+  python3 eyrie.py update-entry --vault vault.eyr --password masterpass --id EYR-ABC123 --generate --length 24
+        """
+    )
+    update_entry_parser.add_argument(
+        '--vault',
+        default='vault.eyr',
+        help='Vault file path (default: vault.eyr)'
+    )
+    update_entry_parser.add_argument(
+        '--password',
+        required=True,
+        help='Master password (required)'
+    )
+    update_entry_parser.add_argument(
+        '--id',
+        required=True,
+        help='Entry ID to update (required)'
+    )
+    update_entry_parser.add_argument(
+        '--title',
+        help='New service/application name'
+    )
+    update_entry_parser.add_argument(
+        '--username',
+        help='New username/email'
+    )
+    update_entry_parser.add_argument(
+        '--entry-password',
+        dest='entry_password',
+        help='New password (leave empty to keep current)'
+    )
+    update_entry_parser.add_argument(
+        '--url',
+        help='New URL'
+    )
+    update_entry_parser.add_argument(
+        '--category',
+        help='New category'
+    )
+    update_entry_parser.add_argument(
+        '--generate',
+        action='store_true',
+        help='Generate new secure password'
+    )
+    update_entry_parser.add_argument(
+        '--length',
+        type=int,
+        default=16,
+        help='Password length when generating (default: 16)'
+    )
+    
+    # Delete entry command
+    delete_entry_parser = subparsers.add_parser(
+        'delete-entry',
+        help='Delete credential entry',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Permanently delete a credential entry from the vault.
+This action cannot be undone and requires master password confirmation.
+        """,
+        epilog="""
+Example:
+  python3 eyrie.py delete-entry --vault vault.eyr --password masterpass --id EYR-ABC123
+        """
+    )
+    delete_entry_parser.add_argument(
+        '--vault',
+        default='vault.eyr',
+        help='Vault file path (default: vault.eyr)'
+    )
+    delete_entry_parser.add_argument(
+        '--password',
+        required=True,
+        help='Master password (required)'
+    )
+    delete_entry_parser.add_argument(
+        '--id',
+        required=True,
+        help='Entry ID to delete (required)'
+    )
+    delete_entry_parser.add_argument(
+        '--force',
+        action='store_true',
+        help='Force deletion without confirmation'
+    )
+    
+    # Add note command
+    add_note_parser = subparsers.add_parser(
+        'add-note',
+        help='Add new secure note',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Add a new secure note to the vault.
+This command allows you to store encrypted text notes.
+        """,
+        epilog="""
+Examples:
+  python3 eyrie.py add-note --vault vault.eyr --password masterpass --title "Private Key" --category "Security"
+  python3 eyrie.py add-note --vault vault.eyr --password masterpass --title "Recovery Codes" --content-file codes.txt
+        """
+    )
+    add_note_parser.add_argument(
+        '--vault',
+        default='vault.eyr',
+        help='Vault file path (default: vault.eyr)'
+    )
+    add_note_parser.add_argument(
+        '--password',
+        required=True,
+        help='Master password (required)'
+    )
+    add_note_parser.add_argument(
+        '--title',
+        required=True,
+        help='Note title (required)'
+    )
+    add_note_parser.add_argument(
+        '--category',
+        default='Notes',
+        help='Note category (default: Notes)'
+    )
+    add_note_parser.add_argument(
+        '--content',
+        help='Note content'
+    )
+    add_note_parser.add_argument(
+        '--content-file',
+        help='Read note content from file'
+    )
+    
+    # Get note command
+    get_note_parser = subparsers.add_parser(
+        'get-note',
+        help='Retrieve and display secure note',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Retrieve and display a secure note from the vault.
+This command shows the details of a specific note including its content.
+        """,
+        epilog="""
+Example:
+  python3 eyrie.py get-note --vault vault.eyr --password masterpass --id EYR-DEF456
+        """
+    )
+    get_note_parser.add_argument(
+        '--vault',
+        default='vault.eyr',
+        help='Vault file path (default: vault.eyr)'
+    )
+    get_note_parser.add_argument(
+        '--password',
+        required=True,
+        help='Master password (required)'
+    )
+    get_note_parser.add_argument(
+        '--id',
+        required=True,
+        help='Note ID to retrieve (required)'
+    )
+    
+    # List notes command
+    list_notes_parser = subparsers.add_parser(
+        'list-notes',
+        help='List all secure notes',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+List all secure notes in the vault.
+This command displays all stored notes, optionally filtered by category.
+        """,
+        epilog="""
+Examples:
+  python3 eyrie.py list-notes --vault vault.eyr --password masterpass
+  python3 eyrie.py list-notes --vault vault.eyr --password masterpass --category "Security"
+  python3 eyrie.py list-notes --vault vault.eyr --password masterpass --category all
+        """
+    )
+    list_notes_parser.add_argument(
+        '--vault',
+        default='vault.eyr',
+        help='Vault file path (default: vault.eyr)'
+    )
+    list_notes_parser.add_argument(
+        '--password',
+        required=True,
+        help='Master password (required)'
+    )
+    list_notes_parser.add_argument(
+        '--category',
+        help='Filter by category (use "all" to show all notes)'
+    )
+    
+    # Update note command
+    update_note_parser = subparsers.add_parser(
+        'update-note',
+        help='Update existing secure note',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Update an existing secure note in the vault.
+This command allows you to modify any field of an existing note.
+        """,
+        epilog="""
+Examples:
+  python3 eyrie.py update-note --vault vault.eyr --password masterpass --id EYR-DEF456 --title "Updated Title"
+  python3 eyrie.py update-note --vault vault.eyr --password masterpass --id EYR-DEF456 --content-file new_content.txt
+        """
+    )
+    update_note_parser.add_argument(
+        '--vault',
+        default='vault.eyr',
+        help='Vault file path (default: vault.eyr)'
+    )
+    update_note_parser.add_argument(
+        '--password',
+        required=True,
+        help='Master password (required)'
+    )
+    update_note_parser.add_argument(
+        '--id',
+        required=True,
+        help='Note ID to update (required)'
+    )
+    update_note_parser.add_argument(
+        '--title',
+        help='New title'
+    )
+    update_note_parser.add_argument(
+        '--category',
+        help='New category'
+    )
+    update_note_parser.add_argument(
+        '--content',
+        help='New content'
+    )
+    update_note_parser.add_argument(
+        '--content-file',
+        help='Read new content from file'
+    )
+    
+    # Search notes command
+    search_notes_parser = subparsers.add_parser(
+        'search-notes',
+        help='Search notes by title, content, or category',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Search notes by title, content, or category.
+This command searches through all notes for the specified term.
+        """,
+        epilog="""
+Example:
+  python3 eyrie.py search-notes --vault vault.eyr --password masterpass --term "password"
+        """
+    )
+    search_notes_parser.add_argument(
+        '--vault',
+        default='vault.eyr',
+        help='Vault file path (default: vault.eyr)'
+    )
+    search_notes_parser.add_argument(
+        '--password',
+        required=True,
+        help='Master password (required)'
+    )
+    search_notes_parser.add_argument(
+        '--term',
+        required=True,
+        help='Search term (required)'
+    )
+    
+    # Delete note command
+    delete_note_parser = subparsers.add_parser(
+        'delete-note',
+        help='Delete secure note',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Permanently delete a secure note from the vault.
+This action cannot be undone and requires master password confirmation.
+        """,
+        epilog="""
+Example:
+  python3 eyrie.py delete-note --vault vault.eyr --password masterpass --id EYR-DEF456
+        """
+    )
+    delete_note_parser.add_argument(
+        '--vault',
+        default='vault.eyr',
+        help='Vault file path (default: vault.eyr)'
+    )
+    delete_note_parser.add_argument(
+        '--password',
+        required=True,
+        help='Master password (required)'
+    )
+    delete_note_parser.add_argument(
+        '--id',
+        required=True,
+        help='Note ID to delete (required)'
+    )
+    delete_note_parser.add_argument(
+        '--force',
+        action='store_true',
+        help='Force deletion without confirmation'
+    )
     
     # Password generation command
-    gen_parser = subparsers.add_parser('generate', help='Generate secure password')
+    gen_parser = subparsers.add_parser(
+        'generate', 
+        help='Generate secure password',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Generate a secure random password.
+This command creates cryptographically secure passwords.
+        """,
+        epilog="""
+Examples:
+  python3 eyrie.py generate --length 20
+  python3 eyrie.py generate --length 16 --reveal
+        """
+    )
     gen_parser.add_argument(
         '--length', 
         type=int, 
@@ -2001,21 +2634,31 @@ def main():
     # Vault export command
     export_parser = subparsers.add_parser(
         'export', 
-        help='Create encrypted Eyrie vault backup'
+        help='Create encrypted Eyrie vault backup',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Create an encrypted backup of the vault.
+This command creates a portable, encrypted backup file that can be restored later.
+        """,
+        epilog="""
+Example:
+  python3 eyrie.py export --vault vault.eyr --backup-path backup.enc --password backup_password
+        """
     )
     export_parser.add_argument(
         '--vault', 
         default='vault.eyr', 
-        help='Source vault file'
+        help='Source vault file (default: vault.eyr)'
     )
     export_parser.add_argument(
         '--backup-path', 
         default='vault_backup.enc', 
-        help='Backup destination path'
+        help='Backup destination path (default: vault_backup.enc)'
     )
     export_parser.add_argument(
         '--password', 
-        help='Backup encryption password'
+        required=True,
+        help='Backup encryption password (required)'
     )
     export_parser.add_argument(
         '--confirm-password', 
@@ -2025,27 +2668,46 @@ def main():
     # Vault import command
     import_parser = subparsers.add_parser(
         'import', 
-        help='Restore Eyrie vault from backup'
+        help='Restore Eyrie vault from backup',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Restore a vault from an encrypted backup.
+This command imports a previously exported backup file.
+        """,
+        epilog="""
+Example:
+  python3 eyrie.py import --backup-path backup.enc --password backup_password --target-vault restored.eyr
+        """
     )
     import_parser.add_argument(
         '--backup-path', 
         required=True, 
-        help='Backup file path'
+        help='Backup file path (required)'
     )
     import_parser.add_argument(
         '--password', 
-        help='Backup decryption password'
+        required=True,
+        help='Backup decryption password (required)'
     )
     import_parser.add_argument(
         '--target-vault', 
         default='vault.eyr', 
-        help='Destination vault path'
+        help='Destination vault path (default: vault.eyr)'
     )
     
     # Master password change command
     change_parser = subparsers.add_parser(
         'change-master', 
-        help='Rotate Eyrie master credentials'
+        help='Rotate Eyrie master credentials',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Change the master password and re-encrypt all vault data.
+This operation requires the current master password.
+        """,
+        epilog="""
+Example:
+  python3 eyrie.py change-master --vault vault.eyr
+        """
     )
     change_parser.add_argument(
         '--vault', 
@@ -2053,25 +2715,37 @@ def main():
         help='Vault file path (default: vault.eyr)'
     )
     
-    # 2FA management command group
-    tfa_parser = subparsers.add_parser('2fa', help='Two-Factor Authentication management')
-    tfa_subparsers = tfa_parser.add_subparsers(dest='tfa_command', help='2FA commands')
-    
-    setup_parser = tfa_subparsers.add_parser('setup', help='Setup 2FA for vault')
-    setup_parser.add_argument('--vault', default='vault.eyr', help='Vault file path')
-    
-    disable_parser = tfa_subparsers.add_parser('disable', help='Disable 2FA for vault')
-    disable_parser.add_argument('--vault', default='vault.eyr', help='Vault file path')
-    
-    status_parser = tfa_subparsers.add_parser('status', help='Show 2FA status')
-    status_parser.add_argument('--vault', default='vault.eyr', help='Vault file path')
+    # Vault info command
+    info_parser = subparsers.add_parser(
+        'vault-info',
+        help='Display vault statistics and metadata',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Display vault statistics and metadata.
+This command shows information about the vault including entry counts and creation date.
+        """,
+        epilog="""
+Example:
+  python3 eyrie.py vault-info --vault vault.eyr --password masterpass
+        """
+    )
+    info_parser.add_argument(
+        '--vault',
+        default='vault.eyr',
+        help='Vault file path (default: vault.eyr)'
+    )
+    info_parser.add_argument(
+        '--password',
+        required=True,
+        help='Master password (required)'
+    )
     
     # Parse command-line arguments
-    args = parser.parse_args()
-    
-    if not args.command:
+    if len(sys.argv) == 1:
         parser.print_help()
         return
+    
+    args = parser.parse_args()
     
     # Initialize Eyrie application
     eyrie = Eyrie()
@@ -2088,7 +2762,7 @@ def main():
             eyrie.initialize_vault(args.vault)
         
         elif args.command == 'unlock':
-            if eyrie.unlock_vault(args.vault):
+            if eyrie.unlock_vault(args.vault, args.password):
                 # Interactive command loop
                 while True:
                     try:
@@ -2120,6 +2794,18 @@ def main():
                             eyrie.update_entry()
                         elif resolved_command == 'delete_entry':
                             eyrie.delete_entry()
+                        elif resolved_command == 'add_note':
+                            eyrie.add_note()
+                        elif resolved_command == 'list_notes':
+                            eyrie.list_notes()
+                        elif resolved_command == 'get_note':
+                            eyrie.get_note()
+                        elif resolved_command == 'update_note':
+                            eyrie.update_note()
+                        elif resolved_command == 'search_notes':
+                            eyrie.search_notes()
+                        elif resolved_command == 'delete_note':
+                            eyrie.delete_note()
                         elif resolved_command == 'password_history':
                             eyrie.password_history()
                         elif resolved_command == 'reveal_version':
@@ -2132,12 +2818,6 @@ def main():
                             eyrie.change_master_password()
                         elif resolved_command == 'vault_info':
                             eyrie.vault_info()
-                        elif resolved_command == 'setup_2fa':
-                            eyrie.setup_2fa()
-                        elif resolved_command == 'disable_2fa':
-                            eyrie.disable_2fa()
-                        elif resolved_command == 'show_2fa':
-                            eyrie.show_2fa_status()
                         elif resolved_command == 'export_vault':
                             backup_path = prompt("Backup destination: ").strip()
                             if backup_path:
@@ -2167,40 +2847,110 @@ def main():
                         print("[+] Eyrie vault secured")
                         break
         
-        elif args.command == 'generate':
-            if args.length:
-                success, result = password_generator.generate_password_safe(args.length)
-                
-                if not success:
-                    print(f"[-] {result}")
-                    return
-                
-                password = result
-                
-                # Display password partially masked by default, or full if --reveal flag is used
-                if args.reveal:
-                    # Show full password if --reveal flag is used
-                    print(f"Generated password: {password}")
+        elif args.command == 'add-entry':
+            if eyrie.unlock_vault(args.vault, args.password):
+                success = eyrie.add_entry(
+                    title=args.title,
+                    username=args.username,
+                    password=args.entry_password,
+                    url=args.url,
+                    category=args.category,
+                    generate_password=args.generate,
+                    password_length=args.length
+                )
+        
+        elif args.command == 'get-entry':
+            if eyrie.unlock_vault(args.vault, args.password):
+                eyrie.get_entry(entry_id=args.id, show_password=not args.no_password)
+        
+        elif args.command == 'list-entries':
+            if eyrie.unlock_vault(args.vault, args.password):
+                eyrie.list_entries(category=args.category)
+        
+        elif args.command == 'update-entry':
+            if eyrie.unlock_vault(args.vault, args.password):
+                success = eyrie.update_entry(
+                    entry_id=args.id,
+                    title=args.title,
+                    username=args.username,
+                    password=args.entry_password,
+                    url=args.url,
+                    category=args.category,
+                    generate_password=args.generate,
+                    password_length=args.length
+                )
+        
+        elif args.command == 'delete-entry':
+            if eyrie.unlock_vault(args.vault, args.password):
+                if args.force:
+                    print("[-] Force deletion not yet implemented in this version")
+                    success = eyrie.delete_entry(entry_id=args.id)
                 else:
-                    # Show partially masked by default
-                    if len(password) <= 6:
-                        # If password is too short, show as fully masked
-                        masked_display = '*' * len(password)
-                    else:
-                        # Show first 3 chars, asterisks for middle, last 3 chars
-                        first_part = password[:3]
-                        last_part = password[-3:]
-                        masked_middle = '*' * (len(password) - 6)
-                        masked_display = f"{first_part}{masked_middle}{last_part}"
-                    print(f"Generated password: {masked_display}")
+                    success = eyrie.delete_entry(entry_id=args.id)
+        
+        elif args.command == 'add-note':
+            if eyrie.unlock_vault(args.vault, args.password):
+                # Read content from file if specified
+                content = None
+                if args.content_file:
+                    try:
+                        with open(args.content_file, 'r') as f:
+                            content = f.read()
+                    except Exception as e:
+                        print(f"[-] Error reading content file: {e}")
+                        return
                 
-                strength_analysis = password_generator.estimate_password_strength(password)
-                print(f"Security rating: {strength_analysis['strength']}")
+                success = eyrie.add_note(
+                    title=args.title,
+                    category=args.category,
+                    content=content or args.content
+                )
+        
+        elif args.command == 'get-note':
+            if eyrie.unlock_vault(args.vault, args.password):
+                eyrie.get_note(entry_id=args.id)
+        
+        elif args.command == 'list-notes':
+            if eyrie.unlock_vault(args.vault, args.password):
+                eyrie.list_notes(category=args.category)
+        
+        elif args.command == 'update-note':
+            if eyrie.unlock_vault(args.vault, args.password):
+                # Read content from file if specified
+                content = None
+                if args.content_file:
+                    try:
+                        with open(args.content_file, 'r') as f:
+                            content = f.read()
+                    except Exception as e:
+                        print(f"[-] Error reading content file: {e}")
+                        return
                 
-                if ui.copy_to_clipboard(password):
-                    print("[+] Password automatically copied to clipboard (30 second retention)")
-            else:
-                eyrie.generate_password()
+                success = eyrie.update_note(
+                    entry_id=args.id,
+                    title=args.title,
+                    category=args.category,
+                    content=content or args.content
+                )
+        
+        elif args.command == 'search-notes':
+            if eyrie.unlock_vault(args.vault, args.password):
+                eyrie.search_notes(search_term=args.term)
+        
+        elif args.command == 'delete-note':
+            if eyrie.unlock_vault(args.vault, args.password):
+                if args.force:
+                    print("[-] Force deletion not yet implemented in this version")
+                    success = eyrie.delete_note(entry_id=args.id)
+                else:
+                    success = eyrie.delete_note(entry_id=args.id)
+        
+        elif args.command == 'vault-info':
+            if eyrie.unlock_vault(args.vault, args.password):
+                eyrie.vault_info()
+        
+        elif args.command == 'generate':
+            eyrie.generate_password(length=args.length, reveal=args.reveal)
         
         elif args.command == 'export':
             vault_path = args.vault
@@ -2263,19 +3013,6 @@ def main():
         elif args.command == 'change-master':
             if eyrie.unlock_vault(args.vault):
                 eyrie.change_master_password()
-        
-        elif args.command == '2fa':
-            if args.tfa_command == 'setup':
-                if eyrie.unlock_vault(args.vault):
-                    eyrie.setup_2fa()
-            elif args.tfa_command == 'disable':
-                if eyrie.unlock_vault(args.vault):
-                    eyrie.disable_2fa()
-            elif args.tfa_command == 'status':
-                if eyrie.unlock_vault(args.vault):
-                    eyrie.show_2fa_status()
-            else:
-                tfa_parser.print_help()
         
         else:
             parser.print_help()

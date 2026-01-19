@@ -33,7 +33,7 @@ def export_vault(db: VaultDatabase, backup_password: str, backup_path: str) -> b
     """
     try:
         # Fixed salt for reproducible backup keys
-        BACKUP_SALT = b'EYRIE_BACKUP_v1.0.1'
+        BACKUP_SALT = b'EYRIE_BACKUP_v1.1.0'
         export_key, _ = derive_master_key(backup_password, BACKUP_SALT)
         
         if len(export_key) < KEY_SIZE:
@@ -45,7 +45,7 @@ def export_vault(db: VaultDatabase, backup_password: str, backup_path: str) -> b
             
             metadata = {
                 'export_date': datetime.now().isoformat(),
-                'format_version': '1.0.1',
+                'format_version': '1.1.0',
                 'entry_count': 0
             }
             
@@ -82,7 +82,7 @@ def export_vault(db: VaultDatabase, backup_password: str, backup_path: str) -> b
             nonce, ciphertext, tag = encrypt_data(export_key, zip_data)
             
             # Write backup file with header
-            magic = b'EYRIE_BACKUP_v1.0.1'
+            magic = b'EYRIE_BACKUP_v1.1.0'
             magic_padded = magic.ljust(32, b'\x00')
             
             header = struct.pack('!32s12s16s', magic_padded, nonce, tag)
@@ -111,7 +111,7 @@ def import_vault(db: VaultDatabase, backup_password: str, backup_path: str) -> b
         True if import succeeded
     """
     try:
-        BACKUP_SALT = b'EYRIE_BACKUP_v1.0.1'
+        BACKUP_SALT = b'EYRIE_BACKUP_v1.1.0'
         import_key, _ = derive_master_key(backup_password, BACKUP_SALT)
         
         if len(import_key) < KEY_SIZE:
@@ -127,7 +127,7 @@ def import_vault(db: VaultDatabase, backup_password: str, backup_path: str) -> b
             magic, nonce, tag = struct.unpack('!32s12s16s', header)
             magic = magic.rstrip(b'\x00')
             
-            if magic != b'EYRIE_BACKUP_v1.0.1':
+            if magic != b'EYRIE_BACKUP_v1.1.0':
                 print("[-] Invalid backup format")
                 return False
             

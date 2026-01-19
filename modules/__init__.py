@@ -9,3 +9,4 @@ from .ui import *
 from .validation import *
 from .export_import import *
 from .eyr_format import *
+from .notes import *
