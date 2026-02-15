@@ -12,7 +12,7 @@ and user interaction helpers. The UI components are designed to be:
 Key Features:
 - Tabular display of password entries with proper truncation
 - Detailed entry viewing with timestamp formatting
-- Secure clipboard operations with auto-clear functionality
+- Secure clipboard operations with manual clear option
 - Progress indicators for long-running operations
 - Input validation for user choices
 
@@ -204,9 +204,9 @@ def display_entry(entry: Dict, show_password: bool = True, copy_password: bool =
     if show_password and password:
         print(f"Password:    {password}")
         if copy_password:
-            # Auto-copy password to clipboard
-            if copy_to_clipboard(password, timeout=30):
-                print("[+] Password copied to clipboard (will clear in 30 seconds)")
+            # Copy password to clipboard without auto-clear
+            if copy_to_clipboard(password):
+                print("[+] Password copied to clipboard")
             else:
                 print("[-] Failed to copy password to clipboard")
     elif show_password:
@@ -252,7 +252,7 @@ def copy_entry_password(entry: Dict) -> bool:
     Copy an entry's password to the system clipboard.
     
     This is a convenience wrapper around copy_to_clipboard() specifically
-    for password entries with automatic timeout clearing.
+    for password entries.
     
     Args:
         entry (Dict): Entry dictionary containing a 'password' key
@@ -261,17 +261,17 @@ def copy_entry_password(entry: Dict) -> bool:
         bool: True if password was successfully copied, False otherwise
     
     Security Note:
-        - Automatically clears clipboard after 30 seconds
         - Validates that a password exists before attempting copy
         - Provides user feedback on success/failure
+        - User is responsible for clearing clipboard when done
     """
     password = entry.get('password', '')
     if not password:
         print("[-] No password available for this entry")
         return False
     
-    if copy_to_clipboard(password, timeout=30):
-        print("[+] Password copied to clipboard (will clear in 30 seconds)")
+    if copy_to_clipboard(password):
+        print("[+] Password copied to clipboard")
         return True
     else:
         print("[-] Failed to copy password to clipboard")
@@ -400,69 +400,39 @@ def get_user_choice(prompt: str, valid_choices: List[str], default: Optional[str
 # CLIPBOARD MANAGEMENT
 # ==============================================================================
 
-def copy_to_clipboard(text: str, timeout: int = 30) -> bool:
+def copy_to_clipboard(text: str) -> bool:
     """
-    Copy text to system clipboard with optional auto-clear timeout.
+    Copy text to system clipboard.
     
-    This function provides secure clipboard handling by automatically
-    clearing sensitive data after a specified timeout. It uses a daemon
-    thread to manage the timeout without blocking the main application.
+    This function provides clipboard handling for copying sensitive data.
+    Unlike the previous version, it does not automatically clear the clipboard
+    after a timeout. Users should manually clear the clipboard when done.
     
     Args:
         text (str): The text to copy to clipboard
-        timeout (int): Number of seconds after which to clear clipboard.
-                      Set to 0 to disable auto-clear. Default: 30 seconds
     
     Returns:
         bool: True if text was successfully copied, False otherwise
     
-    Security Features:
-        - Auto-clears clipboard after timeout to prevent accidental exposure
-        - Only clears if clipboard still contains the original text
-        - Uses daemon thread to avoid blocking application exit
-        - Handles clipboard errors gracefully
+    Security Note:
+        - This function does NOT automatically clear the clipboard
+        - Sensitive data will remain in clipboard until overwritten
+        - Users should call clear_clipboard() manually when done
+        - Be aware of clipboard history features in modern OSes
     
     Dependencies:
         Requires pyperclip module for cross-platform clipboard support
         Install with: pip install pyperclip
     
     Example:
-        >>> copy_to_clipboard("secret123", timeout=10)
-        True  # Clipboard will be cleared after 10 seconds
+        >>> copy_to_clipboard("secret123")
+        True  # Clipboard now contains "secret123" indefinitely
+        >>> # Later, when done with the secret:
+        >>> clear_clipboard()
     """
     try:
         # Copy text to system clipboard
         pyperclip.copy(text)
-        
-        # Set up auto-clear if timeout specified
-        if timeout > 0:
-            def clear_clipboard():
-                """
-                Internal function to clear clipboard after timeout.
-                
-                This function runs in a separate thread and only clears
-                the clipboard if it still contains the original text,
-                preventing accidental clearing of other clipboard data.
-                """
-                # Wait for specified timeout
-                time.sleep(timeout)
-                try:
-                    # Get current clipboard contents
-                    current = pyperclip.paste()
-                    # Only clear if it's still our text (not overwritten by user)
-                    if current == text:
-                        pyperclip.copy("")  # Clear clipboard
-                except Exception:
-                    # Silently ignore errors during cleanup
-                    # (clipboard may be unavailable or in use)
-                    pass
-            
-            # Start clear timer as daemon thread
-            # Daemon threads automatically exit when main program exits
-            clear_thread = threading.Thread(target=clear_clipboard)
-            clear_thread.daemon = True
-            clear_thread.start()
-        
         return True
         
     except Exception as e:
