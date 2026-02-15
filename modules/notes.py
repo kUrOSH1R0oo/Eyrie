@@ -135,7 +135,7 @@ def display_notes_table(notes: List[Dict]) -> None:
         
         # Build row
         row = [
-            note.get('id', 'N/A'),
+            str(note.get('id', 'N/A')),  # Convert to string explicitly
             title_formatted,
             category_formatted,
             created_formatted
@@ -143,9 +143,22 @@ def display_notes_table(notes: List[Dict]) -> None:
 
         table_data.append(row)
 
-    # Define table headers and column widths
+    # Define table headers
     headers = ['ID', 'Title', 'Category', 'Created']
-    col_widths = [4, 25, 15, 12]  # Fixed widths for notes table
+    
+    # Calculate dynamic column widths based on content
+    col_widths = []
+    for i, header in enumerate(headers):
+        # Start with header width
+        max_width = len(header)
+        
+        # Check all rows for this column
+        for row in table_data:
+            cell_length = len(row[i])
+            if cell_length > max_width:
+                max_width = min(cell_length, 40)  # Cap at 40 chars to prevent overly wide tables
+        
+        col_widths.append(max_width)
 
     # Print table header
     header_row = []
@@ -154,21 +167,17 @@ def display_notes_table(notes: List[Dict]) -> None:
     print(' | '.join(header_row))
 
     # Print separator line
-    separator_length = sum(col_widths) + len(headers) * 3 - 1
+    separator_length = sum(col_widths) + (len(headers) - 1) * 3
     print('-' * separator_length)
 
     # Print table rows
     for row in table_data:
         data_row = []
         for i, cell in enumerate(row):
-            # Truncate if needed, but ensure proper display
+            # Truncate if needed (already capped in width calculation)
             cell_str = str(cell)
-            if i == 1:  # Title column
-                if len(cell_str) > col_widths[i]:
-                    cell_str = cell_str[:col_widths[i]-3] + '...'
-            elif i == 2:  # Category column
-                if len(cell_str) > col_widths[i]:
-                    cell_str = cell_str[:col_widths[i]]
+            if len(cell_str) > col_widths[i]:
+                cell_str = cell_str[:col_widths[i]-3] + '...'
             
             data_row.append(cell_str.ljust(col_widths[i]))
         print(' | '.join(data_row))
@@ -298,7 +307,7 @@ def create_note_from_input() -> Optional[Dict]:
         print("[-] Note content cannot be empty")
         return None
 
-    # Check content size (removed size limit)
+    # Check content size
     content_size = len(content.encode('utf-8'))
 
     return {
@@ -380,7 +389,7 @@ def edit_note_content(existing_content: str = "") -> Optional[str]:
         print("[-] Note content cannot be empty")
         return None
     
-    # Check content size (removed size limit)
+    # Check content size
     content_size = len(content.encode('utf-8'))
     
     # Show size info

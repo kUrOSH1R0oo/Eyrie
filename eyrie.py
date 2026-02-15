@@ -484,7 +484,7 @@ class Eyrie:
                     print(f"[+] Generated password: {masked_display}")
                     
                     if ui.copy_to_clipboard(password):
-                        print("[+] Password automatically copied to clipboard (30 second retention)")
+                        print("[+] Password automatically copied to clipboard.")
                 except password_generator.PasswordGenerationError as e:
                     print(f"[-] {e}")
                     return False
@@ -508,7 +508,7 @@ class Eyrie:
                     entry_data['password'] = password
                     print("[+] Password entered and saved securely")
                     if ui.copy_to_clipboard(password):
-                        print("[+] Password automatically copied to clipboard (30 second retention)")
+                        print("[+] Password automatically copied to clipboard.")
                     break
         else:
             # Parameter mode - only set what's provided
@@ -541,7 +541,7 @@ class Eyrie:
                         print(f"[+] Generated password: {masked_display}")
                         
                         if ui.copy_to_clipboard(password):
-                            print("[+] Password automatically copied to clipboard (30 second retention)")
+                            print("[+] Password automatically copied to clipboard.")
                     except password_generator.PasswordGenerationError as e:
                         print(f"[-] {e}")
                         return False
@@ -603,7 +603,7 @@ class Eyrie:
             
             if show_password and entry.get('password'):
                 if ui.copy_to_clipboard(entry['password']):
-                    print("[+] Password automatically copied to clipboard (30 second retention)")
+                    print("[+] Password automatically copied to clipboard.")
         else:
             print("[-] Entry not found")
     
@@ -764,7 +764,7 @@ class Eyrie:
                         masked_display = self._mask_password_partial(new_password)
                         print(f"[+] New password: {masked_display}")
                         if ui.copy_to_clipboard(new_password):
-                            print("[+] Password automatically copied to clipboard (30 second retention)")
+                            print("[+] Password automatically copied to clipboard.")
                     except password_generator.PasswordGenerationError as e:
                         print(f"[-] {e}")
                         return False
@@ -792,7 +792,7 @@ class Eyrie:
                     
                     updated_data['password'] = new_password
                     if ui.copy_to_clipboard(new_password):
-                        print("[+] Password automatically copied to clipboard (30 second retention)")
+                        print("[+] Password automatically copied to clipboard.")
             else:
                 updated_data['password'] = current_entry.get('password', '')
         else:
@@ -845,52 +845,87 @@ class Eyrie:
             title (str, optional): Note title
             category (str, optional): Note category
             content (str, optional): Note content
-            
+        
         Returns:
             bool: True if note was successfully added
         """
         if not self._check_session():
             return False
-    
+
         try:
-            if title is None and category is None and content is None:
-                # Use the notes module to create note from interactive input
-                note_data = notes.create_note_from_input()
-                if not note_data:
-                    print("[-] Note creation cancelled")
+            if title is not None:
+                print(f"[i] Title: {title}")
+                if category:
+                    print(f"[i] Category: {category}")
+                else:
+                    category = "Notes"
+                    print(f"[i] Category: {category}")
+                print()
+            
+                print("-" * 60)
+                print("Type your note below. Each line will be saved.")
+                print("Type 'END' on a new line when finished (END will not be stored).")
+                print("Press Ctrl+C to cancel.")
+                print("-" * 60)
+            
+                lines = []
+                line_number = 1
+            
+                try:
+                    while True:
+                        line_input = prompt(f"{line_number:3}> ")
+
+                        if line_input.strip().upper() == "END":
+                            print("[+] Finished input")
+                            break
+                    
+                        lines.append(line_input)
+                        line_number += 1
+                    
+                except KeyboardInterrupt:
+                    print("\n[-] Note creation cancelled")
                     return False
-            else:
-                # Parameter mode
+            
+                note_content = '\n'.join(lines)
+
+                if not note_content:
+                    print("[-] Note content cannot be empty")
+                    return False
+            
+                note_data = {
+                    'title': title,
+                    'category': category,
+                    'content': note_content
+                }
+            elif content is not None:
                 if title is None:
                     title = prompt("Note title: ").strip()
                     if not title:
                         print("[-] Title required")
                         return False
-                
+            
                 if category is None:
                     category = prompt("Category [Notes]: ").strip() or "Notes"
-                
-                if content is None:
-                    content = prompt("Note content (multi-line, end with Ctrl+D): ", multiline=True).strip()
-                    if not content:
-                        print("[-] Content required")
-                        return False
-                
+            
                 note_data = {
                     'title': title,
                     'category': category,
                     'content': content
                 }
-        
-            # Store note in database
+            else:
+                note_data = notes.create_note_from_input()
+                if not note_data:
+                    print("[-] Note creation cancelled")
+                    return False
+    
             entry_id = self.db.add_note(self.master_key, note_data)
-        
+    
             if entry_id:
                 print(f"[+] Note successfully created (ID: {entry_id})")
                 return True
-        
+    
             return False
-        
+    
         except Exception as e:
             print(f"[-] Error adding note: {e}")
             return False
@@ -1684,7 +1719,7 @@ class Eyrie:
             print(f"Security assessment: {strength_info['strength']}")
         
             if ui.copy_to_clipboard(password):
-                print("[+] Password automatically copied to clipboard (30 second retention)")
+                print("[+] Password automatically copied to clipboard.")
             
         except password_generator.PasswordGenerationError as e:
             print(f"[-] {e}")
